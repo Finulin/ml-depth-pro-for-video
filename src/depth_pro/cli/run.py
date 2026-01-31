@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Modified DepthPro script for 16-bit PNG export.
+Modified DepthPro script for 16-bit PNG export (No NPZ).
 Optimized for Apple Silicon (M4).
 """
 
@@ -9,10 +9,8 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import PIL.Image
 import torch
-import cv2  # Für hochwertigen 16-bit Export
-from matplotlib import pyplot as plt
+import cv2
 from tqdm import tqdm
 
 from depth_pro import create_model_and_transforms, load_rgb
@@ -31,7 +29,7 @@ def run(args):
     if args.verbose:
         logging.basicConfig(level=logging.INFO)
 
-    # Modell laden (Nutzt die Neural Engine via torch.half)
+    # Modell laden
     model, transform = create_model_and_transforms(
         device=get_torch_device(),
         precision=torch.half,
@@ -45,28 +43,25 @@ def run(args):
     else:
         relative_path = args.image_path.parent
 
-    if not args.skip_display:
-        plt.ion()
-        fig = plt.figure(figsize=(12, 6))
-        ax_rgb = fig.add_subplot(121)
-        ax_disp = fig.add_subplot(122)
+    # Wir entfernen hier die Matplotlib GUI Logik komplett, da du --skip-display nutzt
+    # Das macht das Script schlanker für Video-Verarbeitung.
 
     for image_path in tqdm(image_paths):
-        if image_path.suffix.lower() not in [".jpg", ".jpeg", ".png", ".webp"]:
+        if image_path.suffix.lower() not in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]:
             continue
 
         try:
-            LOGGER.info(f"Verarbeite Bild: {image_path} ...")
+            # Bild laden
             image, _, f_px = load_rgb(image_path)
         except Exception as e:
-            LOGGER.error(f"Fehler beim Laden von {image_path}: {e}")
+            LOGGER.error(f"Fehler bei {image_path}: {e}")
             continue
 
         # Inferenz
         prediction = model.infer(transform(image), f_px=f_px)
         depth = prediction["depth"].detach().cpu().numpy().squeeze()
 
-        # Dateipfad-Logik
+        # Speichern
         if args.output_path is not None:
             output_file_base = (
                 args.output_path
@@ -75,45 +70,32 @@ def run(args):
             )
             output_file_base.parent.mkdir(parents=True, exist_ok=True)
 
-            # --- 16-BIT PNG EXPORT LOGIK ---
-            # Wir normieren die metrische Tiefe für Blender Displacement
-            # Nah = Hell (Weiß), Fern = Dunkel (Schwarz)
+            # --- 16-BIT PNG LOGIK ---
             d_min, d_max = depth.min(), depth.max()
-            depth_relative = (depth - d_min) / (d_max - d_min + 1e-8)
+
+            # Division durch Null verhindern
+            if d_max - d_min == 0:
+                d_max += 1e-8
+
+            depth_relative = (depth - d_min) / (d_max - d_min)
             depth_inverted = 1.0 - depth_relative
 
             # Umwandlung in 16-bit (0 - 65535)
             depth_16bit = (depth_inverted * 65535).astype(np.uint16)
 
-            # Speichern als PNG
+            # Nur das PNG speichern
             png_path = str(output_file_base) + "_16bit.png"
             cv2.imwrite(png_path, depth_16bit)
-            LOGGER.info(f"16-bit Map gespeichert: {png_path}")
 
-            # Optional: Metrische Rohdaten als NPZ speichern
-            np.savez_compressed(output_file_base, depth=depth)
-
-        # Anzeige (Invertierte Tiefe für Visualisierung)
-        if not args.skip_display:
-            inv_depth_viz = 1.0 / np.clip(depth, 0.1, 250.0)
-            inv_depth_viz = (inv_depth_viz - inv_depth_viz.min()) / (inv_depth_viz.max() - inv_depth_viz.min())
-
-            ax_rgb.imshow(image)
-            ax_rgb.set_title("Original")
-            ax_disp.imshow(inv_depth_viz, cmap="turbo")
-            ax_disp.set_title("Depth Map (Turbo)")
-            fig.canvas.draw()
-            fig.canvas.flush_events()
-
-    if not args.skip_display:
-        plt.show(block=True)
+            if args.verbose:
+                LOGGER.info(f"Gespeichert: {png_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="DepthPro 16-bit Export für Mac M4")
+    parser = argparse.ArgumentParser(description="DepthPro 16-bit Clean Export")
     parser.add_argument("-i", "--image-path", type=Path, required=True, help="Input Bild oder Ordner")
     parser.add_argument("-o", "--output_path", type=Path, help="Output Ordner")
-    parser.add_argument("--skip-display", action="store_true", help="Kein GUI Fenster öffnen")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Logging Details")
+    parser.add_argument("--skip-display", action="store_true", help="Ignoriert (Legacy Flag)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Mehr Details anzeigen")
 
     run(parser.parse_args())
 
