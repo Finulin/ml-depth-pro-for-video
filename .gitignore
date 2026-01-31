@@ -12,3 +12,5 @@ src/depth_pro/__pycache__/
 src/depth_pro/cli/__pycache__/
 
 src/depth_pro/network/__pycache__/
+
+data/depth/
