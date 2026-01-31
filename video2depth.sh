@@ -54,20 +54,7 @@ ffmpeg -v error -i "$INPUT_VIDEO" -pix_fmt rgb48be "$TMP_FRAMES/frame_%04d.png"
 # 4. KI-Inferenz (Schleife)
 echo "🧠 Berechne Depth Maps (Das kann dauern)..."
 
-# Wir zählen die Dateien für einen Fortschrittsbalken
-TOTAL_FILES=$(ls "$TMP_FRAMES"/*.png | wc -l)
-CURRENT=0
-
-for img in "$TMP_FRAMES"/*.png; do
-    ((CURRENT++))
-    # Dateiname extrahieren für Logging
-    bname=$(basename "$img")
-    
-    echo "   [$CURRENT / $TOTAL_FILES] Verarbeite: $bname"
-    
-    # Der eigentliche Befehl wie angefordert
-    $DEPTH_CMD -i "$img" -o "$TMP_DEPTH" --skip-display > /dev/null 2>&1
-done
+$DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display
 
 echo "✅ KI-Berechnung abgeschlossen."
 
