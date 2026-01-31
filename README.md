@@ -5,8 +5,8 @@
 We recommend setting up a virtual environment. Using e.g. miniconda, the `depth_pro` package can be installed via:
 
 ```bash
-conda create -n depth-pro -y python=3.9
-conda activate depth-pro
+conda create -n depth-pro-for-video -y python=3.9
+conda activate depth-pro-for-video
 
 pip install -e .
 ```
@@ -21,7 +21,7 @@ source get_pretrained_models.sh   # Files will be downloaded to `checkpoints` di
 We provide a helper script to directly run the model on a single image:
 ```bash
 # Run prediction on a single image:
-depth-pro-run -i ./data/example.jpg
+depth-pro-run -i ./data/example.jpg -o ./data/ --skip-display
 # Run `depth-pro-run -h` for available options.
 ```
 
