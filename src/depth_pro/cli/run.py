@@ -1,41 +1,35 @@
 #!/usr/bin/env python3
-"""Sample script to run DepthPro.
-
-Copyright (C) 2024 Apple Inc. All Rights Reserved.
 """
-
+Modified DepthPro script for 16-bit PNG export (No NPZ).
+Optimized for Apple Silicon (M4).
+"""
 
 import argparse
 import logging
 from pathlib import Path
 
 import numpy as np
-import PIL.Image
 import torch
-from matplotlib import pyplot as plt
+import cv2
 from tqdm import tqdm
 
 from depth_pro import create_model_and_transforms, load_rgb
 
 LOGGER = logging.getLogger(__name__)
 
-
 def get_torch_device() -> torch.device:
-    """Get the Torch device."""
-    device = torch.device("cpu")
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    return device
-
+    """Wählt das beste Gerät für den Mac mini M4 (MPS)."""
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    elif torch.cuda.is_available():
+        return torch.device("cuda:0")
+    return torch.device("cpu")
 
 def run(args):
-    """Run Depth Pro on a sample image."""
     if args.verbose:
         logging.basicConfig(level=logging.INFO)
 
-    # Load model.
+    # Modell laden
     model, transform = create_model_and_transforms(
         device=get_torch_device(),
         precision=torch.half,
@@ -44,111 +38,66 @@ def run(args):
 
     image_paths = [args.image_path]
     if args.image_path.is_dir():
-        image_paths = args.image_path.glob("**/*")
+        image_paths = list(args.image_path.glob("**/*"))
         relative_path = args.image_path
     else:
         relative_path = args.image_path.parent
 
-    if not args.skip_display:
-        plt.ion()
-        fig = plt.figure()
-        ax_rgb = fig.add_subplot(121)
-        ax_disp = fig.add_subplot(122)
+    # Wir entfernen hier die Matplotlib GUI Logik komplett, da du --skip-display nutzt
+    # Das macht das Script schlanker für Video-Verarbeitung.
 
     for image_path in tqdm(image_paths):
-        # Load image and focal length from exif info (if found.).
+        if image_path.suffix.lower() not in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]:
+            continue
+
         try:
-            LOGGER.info(f"Loading image {image_path} ...")
+            # Bild laden
             image, _, f_px = load_rgb(image_path)
         except Exception as e:
-            LOGGER.error(str(e))
+            LOGGER.error(f"Fehler bei {image_path}: {e}")
             continue
-        # Run prediction. If `f_px` is provided, it is used to estimate the final metric depth,
-        # otherwise the model estimates `f_px` to compute the depth metricness.
+
+        # Inferenz
         prediction = model.infer(transform(image), f_px=f_px)
-
-        # Extract the depth and focal length.
         depth = prediction["depth"].detach().cpu().numpy().squeeze()
-        if f_px is not None:
-            LOGGER.debug(f"Focal length (from exif): {f_px:0.2f}")
-        elif prediction["focallength_px"] is not None:
-            focallength_px = prediction["focallength_px"].detach().cpu().item()
-            LOGGER.info(f"Estimated focal length: {focallength_px}")
 
-        inverse_depth = 1 / depth
-        # Visualize inverse depth instead of depth, clipped to [0.1m;250m] range for better visualization.
-        max_invdepth_vizu = min(inverse_depth.max(), 1 / 0.1)
-        min_invdepth_vizu = max(1 / 250, inverse_depth.min())
-        inverse_depth_normalized = (inverse_depth - min_invdepth_vizu) / (
-            max_invdepth_vizu - min_invdepth_vizu
-        )
-
-        # Save Depth as npz file.
+        # Speichern
         if args.output_path is not None:
-            output_file = (
+            output_file_base = (
                 args.output_path
                 / image_path.relative_to(relative_path).parent
                 / image_path.stem
             )
-            LOGGER.info(f"Saving depth map to: {str(output_file)}")
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(output_file, depth=depth)
+            output_file_base.parent.mkdir(parents=True, exist_ok=True)
 
-            # Save as color-mapped "turbo" jpg image.
-            cmap = plt.get_cmap("turbo")
-            color_depth = (cmap(inverse_depth_normalized)[..., :3] * 255).astype(
-                np.uint8
-            )
-            color_map_output_file = str(output_file) + ".jpg"
-            LOGGER.info(f"Saving color-mapped depth to: : {color_map_output_file}")
-            PIL.Image.fromarray(color_depth).save(
-                color_map_output_file, format="JPEG", quality=90
-            )
+            # --- 16-BIT PNG LOGIK ---
+            d_min, d_max = depth.min(), depth.max()
 
-        # Display the image and estimated depth map.
-        if not args.skip_display:
-            ax_rgb.imshow(image)
-            ax_disp.imshow(inverse_depth_normalized, cmap="turbo")
-            fig.canvas.draw()
-            fig.canvas.flush_events()
+            # Division durch Null verhindern
+            if d_max - d_min == 0:
+                d_max += 1e-8
 
-    LOGGER.info("Done predicting depth!")
-    if not args.skip_display:
-        plt.show(block=True)
+            depth_relative = (depth - d_min) / (d_max - d_min)
+            depth_inverted = 1.0 - depth_relative
 
+            # Umwandlung in 16-bit (0 - 65535)
+            depth_16bit = (depth_inverted * 65535).astype(np.uint16)
+
+            # Nur das PNG speichern
+            png_path = str(output_file_base) + "_16bit.png"
+            cv2.imwrite(png_path, depth_16bit)
+
+            if args.verbose:
+                LOGGER.info(f"Gespeichert: {png_path}")
 
 def main():
-    """Run DepthPro inference example."""
-    parser = argparse.ArgumentParser(
-        description="Inference scripts of DepthPro with PyTorch models."
-    )
-    parser.add_argument(
-        "-i", 
-        "--image-path", 
-        type=Path, 
-        default="./data/example.jpg",
-        help="Path to input image.",
-    )
-    parser.add_argument(
-        "-o",
-        "--output-path",
-        type=Path,
-        help="Path to store output files.",
-    )
-    parser.add_argument(
-        "--skip-display",
-        action="store_true",
-        help="Skip matplotlib display.",
-    )
-    parser.add_argument(
-        "-v", 
-        "--verbose", 
-        action="store_true", 
-        help="Show verbose output."
-    )
-    
-    run(parser.parse_args())
+    parser = argparse.ArgumentParser(description="DepthPro 16-bit Clean Export")
+    parser.add_argument("-i", "--image-path", type=Path, required=True, help="Input Bild oder Ordner")
+    parser.add_argument("-o", "--output_path", type=Path, help="Output Ordner")
+    parser.add_argument("--skip-display", action="store_true", help="Ignoriert (Legacy Flag)")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Mehr Details anzeigen")
 
+    run(parser.parse_args())
 
 if __name__ == "__main__":
     main()
