@@ -14,3 +14,7 @@ src/depth_pro/cli/__pycache__/
 src/depth_pro/network/__pycache__/
 
 data/depth/
+
+data/video/tmp_depth_example/
+
+data/video/tmp_frames_example/

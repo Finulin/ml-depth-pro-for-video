@@ -5,7 +5,7 @@
 # ==============================================================================
 
 # 1. Eingabedatei (wird als erstes Argument übergeben)
-INPUT_VIDEO="$1"
+INPUT_VIDEO=$(realpath "$1")
 
 # 2. Befehl für das Python-Script
 # Stelle sicher, dass 'depth-pro-run' im Pfad ist oder nutze den vollen Pfad (z.B. /Users/deinname/.../venv/bin/python run.py)
