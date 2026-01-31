@@ -1,8 +1,8 @@
-## Depth Pro: Sharp Monocular Metric Depth for Videos
+## Depth Pro: Scharfe Monokulare Metrische Depthmaps für Videos
 
-# Getting Started
+# Erste Schritte
 
-We recommend setting up a virtual environment. Using e.g. miniconda, the `depth_pro` package can be installed via:
+Wir empfehlen, eine virtuelle Umgebung einzurichten. Zum Beispiel mit miniconda kann das `depth_pro_for_video`-Paket wie folgt installiert werden:
 
 ```bash
 conda create -n depth-pro-for-video -y python=3.9
@@ -11,18 +11,21 @@ conda activate depth-pro-for-video
 pip install -e .
 ```
 
-To download pretrained checkpoints follow the code snippet below:
+Um vortrainierte KI-Modelle (Checkpoints) herunterzuladen, führen Sie das folgende Code-Schnipsel aus:
 ```bash
 source get_pretrained_models.sh   # Files will be downloaded to `checkpoints` directory.
 ```
 
-### Running from commandline
+### Ausführung über die Kommandozeile
 
-We provide a helper script to directly run the model on a single image:
+Wir stellen Hilfsskripte bereit, um das Modell direkt auf einem einzelnen Bild oder einem Video auszuführen:
 ```bash
-# Run prediction on a single image:
-depth-pro-run -i ./data/example.jpg -o ./data/depth/ --skip-display
-# Run `depth-pro-run -h` for available options.
+# Führe die Erstellung einer Depthmap auf einem einzelnen Bild aus:
+depth-pro-run -i ./data/image/example.jpg -o ./data/image/depth/ --skip-display
+# Führe `depth-pro-run -h` aus, um verfügbare Optionen anzuzeigen.
+
+# Führe die Erstellung von Depthmaps auf einem Video aus:
+./video2depth.sh ./data/video/example.mp4
 ```
 
 ## License
