@@ -8,6 +8,7 @@ dependencies = [
     "torchvision",
     "timm",
     "numpy<2",
+    "opencv-python==4.8.0.74",
     "pillow_heif",
     "matplotlib",
 ]
