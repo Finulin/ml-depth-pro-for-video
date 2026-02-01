@@ -20,7 +20,6 @@ def run(args):
     model, transform = create_model_and_transforms(device=get_torch_device(), precision=torch.half)
     model.eval()
 
-    # Sortierung ist extrem wichtig für De-Flickering!
     if args.image_path.is_dir():
         image_paths = sorted(list(args.image_path.glob("**/*")))
         relative_path = args.image_path
@@ -28,8 +27,9 @@ def run(args):
         image_paths = [args.image_path]
         relative_path = args.image_path.parent
 
+    # Filter-Variablen
     prev_depth = None
-    alpha = args.smooth
+    window = [] # Für Median-Filter
 
     for image_path in tqdm(image_paths):
         if image_path.suffix.lower() not in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]: continue
@@ -41,11 +41,20 @@ def run(args):
         prediction = model.infer(transform(image), f_px=f_px)
         depth = prediction["depth"].detach().cpu().numpy().squeeze()
 
-        # --- DE-FLICKERING ---
-        if alpha < 1.0 and prev_depth is not None:
-            if depth.shape == prev_depth.shape:
-                depth = (alpha * depth) + ((1.0 - alpha) * prev_depth)
-        prev_depth = depth.copy()
+        # --- FILTER LOGIK ---
+        if args.filter_mode == "median":
+            # Median-Filter (Zeitliches Fenster)
+            window.append(depth)
+            if len(window) > args.window_size:
+                window.pop(0)
+            # Berechne Median über die Achse des Fensters
+            depth = np.median(np.array(window), axis=0).astype(depth.dtype)
+
+        elif args.filter_mode == "ema":
+            # EMA-Filter (Gleitender Durchschnitt)
+            if prev_depth is not None and depth.shape == prev_depth.shape:
+                depth = (args.smooth * depth) + ((1.0 - args.smooth) * prev_depth)
+            prev_depth = depth.copy()
 
         # --- 16-BIT EXPORT ---
         if args.output_path:
@@ -63,7 +72,9 @@ def main():
     parser.add_argument("-i", "--image-path", type=Path, required=True)
     parser.add_argument("-o", "--output_path", type=Path)
     parser.add_argument("--skip-display", action="store_true")
-    parser.add_argument("--smooth", type=float, default=0.7)
+    parser.add_argument("--filter-mode", type=str, choices=["ema", "median", "none"], default="ema")
+    parser.add_argument("--smooth", type=float, default=0.7, help="EMA Faktor (0.1-1.0)")
+    parser.add_argument("--window-size", type=int, default=3, help="Fenstergröße für Median")
     parser.add_argument("-v", "--verbose", action="store_true")
     run(parser.parse_args())
 
