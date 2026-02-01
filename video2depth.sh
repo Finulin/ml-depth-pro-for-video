@@ -67,9 +67,20 @@ TMP_DEPTH="${DIR_SOURCE}/tmp_depth_${VIDEO_NAME}"
 OUTPUT_VIDEO="${DIR_SOURCE}/${VIDEO_NAME}_depthmap.mp4"
 
 # Speicherplatz-Prüfung
-echo "📊 Analysiere Speicher..."
+echo "📊 Analysiere Speicherplatzbedarf..."
+FRAME_COUNT=$(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$INPUT_VIDEO")
+ESTIMATED_MB_PER_FRAME=25
+TOTAL_REQUIRED_MB=$((FRAME_COUNT * ESTIMATED_MB_PER_FRAME))
 AVAILABLE_MB=$(df -m "$DIR_SOURCE" | tail -1 | awk '{print $4}')
-[ "$AVAILABLE_MB" -lt 5000 ] && echo "⚠️ Platz knapp!" # Grobe Warnung
+
+echo "   - Frames: $FRAME_COUNT | Bedarf: ~$TOTAL_REQUIRED_MB MB | Verfügbar: $AVAILABLE_MB MB"
+
+if [ "$TOTAL_REQUIRED_MB" -gt "$AVAILABLE_MB" ]; then
+   echo "⚠️  Warnung: Speicherplatz knapp!"
+   read -p "Trotzdem fortfahren? (y/n): " confirm
+   [[ $confirm != [yY] ]] && exit 1
+fi
+
 
 echo "🎬 Modus: $MODE | Wert: $VAL"
 mkdir -p "$TMP_FRAMES" "$TMP_DEPTH"
