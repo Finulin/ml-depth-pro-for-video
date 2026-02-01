@@ -1,5 +1,46 @@
 #!/bin/bash
 
+# =================================================================================
+# Hilfsfunktion
+# Zeigt die Nutzungsinformationen für das Skript an.
+# =================================================================================
+show_help() {
+cat << EOF
+Nutzung: ./video2depth.sh [-h] video.mp4 [modus] [wert]
+
+Erstellt ein Depth-Map-Video aus einer Quelldatei.
+
+ARGUMENTE:
+  video.mp4     Pfad zur Eingabevideodatei. (Erforderlich)
+
+  modus         Der zu verwendende Filtermodus. Kann 'ema' oder 'median' sein.
+                'ema': Exponential Moving Average - glättet die Depth Maps über die Zeit.
+                'median': Medianfilter - reduziert Ausreißer über mehrere Frames.
+                (Standard: ema)
+
+  wert          Der Wert für den gewählten Filtermodus.
+                - Für 'ema': Ein Glättungsfaktor zwischen 0.0 und 1.0. (Standard: 0.7)
+                - Für 'median': Eine ungerade Fenstergröße für den Medianfilter. (Standard: 3)
+
+OPTIONEN:
+  -h, --help    Zeigt diese Hilfenachricht an und beendet das Skript.
+
+BEISPIELE:
+  ./video2depth.sh mein_video.mp4
+  ./video2depth.sh mein_video.mp4 ema 0.5
+  ./video2depth.sh mein_video.mp4 median 5
+EOF
+}
+
+
+# =================================================================================
+# Parameter-Verarbeitung
+# =================================================================================
+if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
+    show_help
+    exit 0
+fi
+
 # Nutzung: ./video2depth.sh video.mp4 [ema|median] [wert]
 # Beispiel EMA:    ./video2depth.sh test.mp4 ema 0.5
 # Beispiel Median: ./video2depth.sh test.mp4 median 5

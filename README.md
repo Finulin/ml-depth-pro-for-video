@@ -25,8 +25,15 @@ depth-pro-run -i ./data/image/example.jpg -o ./data/image/depth/ --skip-display
 # Führe `depth-pro-run -h` aus, um verfügbare Optionen anzuzeigen.
 
 # Führe die Erstellung von Depthmaps auf einem Video aus:
-./video2depth.sh ./data/video/example.mp4
+./video2depth.sh ./data/video/example.mp4 median 3
+# Führe `video2depth.sh -h` aus, um verfügbare Optionen anzuzeigen.
 ```
+### Optionen
+
+- `median`: Median Filter für die Depthmap-Berechnung
+- `3`: Kernelgröße für den Median Filter
+- `ema`: Exponentieller Mittelwert Filter für die Depthmap-Berechnung
+- `0.7`: Alpha-Wert für den Exponentiellen Mittelwert Filter
 
 ## License
 This sample code is released under the [LICENSE](LICENSE) terms.
