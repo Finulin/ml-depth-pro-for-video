@@ -5,10 +5,15 @@
 # ==============================================================================
 
 # 1. Eingabedatei (wird als erstes Argument übergeben)
+if [ -z "$1" ]; then
+    echo "❌ Fehler: Bitte eine Videodatei angeben."
+    echo "Nutzung: ./video2depth.sh /Pfad/zu/deinem/Video.mp4"
+    exit 1
+fi
+
 INPUT_VIDEO=$(realpath "$1")
 
-# 2. Befehl für das Python-Script
-# Stelle sicher, dass 'depth-pro-run' im Pfad ist oder nutze den vollen Pfad (z.B. /Users/deinname/.../venv/bin/python run.py)
+# 2. Befehl für das Python-Script (wieder auf den Alias/Link zurückgesetzt)
 DEPTH_CMD="depth-pro-run"
 
 # 3. Benennung der temporären Ordner (basiert auf dem Videonamen)
@@ -23,15 +28,37 @@ TMP_DEPTH="${DIR_SOURCE}/tmp_depth_${VIDEO_NAME}"
 OUTPUT_VIDEO="${DIR_SOURCE}/${VIDEO_NAME}_depthmap.mp4"
 
 # ==============================================================================
-# LOGIK
+# SPEICHERPLATZ-PRÜFUNG
 # ==============================================================================
 
-# Abbruch bei fehlendem Video
-if [ -z "$INPUT_VIDEO" ]; then
-    echo "❌ Fehler: Bitte eine Videodatei angeben."
-    echo "Nutzung: ./video2depth.sh /Pfad/zu/deinem/Video.mp4"
-    exit 1
+echo "📊 Analysiere Speicherplatzbedarf..."
+
+# Ermittle Anzahl der Frames
+FRAME_COUNT=$(ffprobe -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$INPUT_VIDEO")
+
+# Schätzung: 25MB pro Frame (Original PNG + Depth PNG Puffer)
+ESTIMATED_MB_PER_FRAME=25
+TOTAL_REQUIRED_MB=$((FRAME_COUNT * ESTIMATED_MB_PER_FRAME))
+
+# Verfügbarer Platz auf dem Ziel-Laufwerk
+AVAILABLE_MB=$(df -m "$DIR_SOURCE" | tail -1 | awk '{print $4}')
+
+echo "   - Bilder im Video: $FRAME_COUNT"
+echo "   - Geschätzter Bedarf: ~$TOTAL_REQUIRED_MB MB"
+echo "   - Verfügbar auf SSD: $AVAILABLE_MB MB"
+
+if [ "$TOTAL_REQUIRED_MB" -gt "$AVAILABLE_MB" ]; then
+    echo "⚠️  ACHTUNG: Der Speicherplatz auf deiner SSD könnte knapp werden!"
+    read -p "Möchtest du trotzdem fortfahren? (y/n): " confirm
+    if [[ $confirm != [yY] ]]; then
+        echo "❌ Abbruch durch Benutzer."
+        exit 1
+    fi
 fi
+
+# ==============================================================================
+# LOGIK
+# ==============================================================================
 
 echo "🎬 Starte Verarbeitung für: $VIDEO_BASENAME"
 echo "---------------------------------------------"
@@ -41,30 +68,24 @@ echo "📁 Erstelle temporäre Verzeichnisse..."
 mkdir -p "$TMP_FRAMES"
 mkdir -p "$TMP_DEPTH"
 
-# 2. FPS auslesen (Wichtig für die Rekonstruktion!)
+# 2. FPS auslesen
 echo "i  Ermittle Bildwiederholrate (FPS)..."
 FPS=$(ffprobe -v 0 -of default=noprint_wrappers=1:nokey=1 -select_streams v:0 -show_entries stream=r_frame_rate "$INPUT_VIDEO")
 echo "   -> FPS erkannt: $FPS"
 
 # 3. Video in 16-bit PNG Einzelbilder zerlegen
 echo "🔨 Zerlege Video in Einzelbilder (16-bit)..."
-# -pix_fmt rgb48be sorgt für 16-bit Big Endian RGB (höchste Qualität für die KI)
 ffmpeg -v error -i "$INPUT_VIDEO" -pix_fmt rgb48be "$TMP_FRAMES/frame_%04d.png"
 
-# 4. KI-Inferenz (Schleife)
-echo "🧠 Berechne Depth Maps (Das kann dauern)..."
-
+# 4. KI-Inferenz
+echo "🧠 Berechne Depth Maps auf der GPU..."
+# Der Batch-Aufruf nutzt das Verzeichnis für maximale Performance
 $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display
 
 echo "✅ KI-Berechnung abgeschlossen."
 
 # 5. Bilder zu Video zusammensetzen
 echo "🎞  Erstelle MP4-Video aus Depth Maps..."
-
-# HINWEIS: Dein Python-Script speichert die Dateien als *_16bit.png.
-# Wir müssen ffmpeg sagen, dass es nach diesem Muster suchen soll.
-# -glob pattern funktioniert auf Mac oft besser als %04d bei komplexen Suffixen, 
-# aber wir nutzen hier das strikte %04d Pattern mit dem Suffix.
 
 ffmpeg -y -v error \
     -r "$FPS" \
