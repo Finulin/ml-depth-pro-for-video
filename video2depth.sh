@@ -17,11 +17,11 @@ ARGUMENTE:
                 'combined': Wendet erst Median, dann EMA an.
                 (Standard: ema)
 
-  wert1         - Bei 'ema': Glättungsfaktor (0.0 - 1.0). (Standard: 0.7)
-                - Bei 'median': Fenstergröße (ungerade Zahl). (Standard: 3)
+  wert1         - Bei 'ema': Glättungsfaktor (0.0 - 1.0). (Standard: 0.6)
+                - Bei 'median': Fenstergröße (ungerade Zahl). (Standard: 6)
                 - Bei 'combined': Glättungsfaktor für EMA.
 
-  wert2         - Nur bei 'combined': Fenstergröße für Median. (Standard: 3)
+  wert2         - Nur bei 'combined': Fenstergröße für Median. (Standard: 6)
 
 OPTIONEN:
   -h, --help    Zeigt diese Hilfenachricht an und beendet das Skript.
@@ -52,11 +52,11 @@ fi
 
 INPUT_VIDEO=$(realpath "$1")
 MODE=${2:-ema}      # Standard: ema
-VAL1=${3:-0.7}      # Standardwert 1
-VAL2=${4:-3}        # Standardwert 2 (nur für combined relevant)
+VAL1=${3:-0.6}      # Standardwert 1
+VAL2=${4:-6}        # Standardwert 2 (nur für combined relevant)
 
-# Falls Median gewählt wurde, aber der Standardwert noch auf 0.7 steht, korrigieren
-if [ "$MODE" == "median" ] && [ "$VAL1" == "0.7" ]; then VAL1=3; fi
+# Falls Median gewählt wurde, aber der Standardwert noch auf 0.6 steht, korrigieren
+if [ "$MODE" == "median" ] && [ "$VAL1" == "0.6" ]; then VAL1=6; fi
 
 DEPTH_CMD="depth-pro-run"
 VIDEO_NAME=$(basename "$INPUT_VIDEO" | cut -f 1 -d '.')

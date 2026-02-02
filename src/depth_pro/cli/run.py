@@ -75,8 +75,8 @@ def main():
     parser.add_argument("-o", "--output_path", type=Path)
     parser.add_argument("--skip-display", action="store_true")
     parser.add_argument("--filter-mode", type=str, choices=["ema", "median", "none", "combined"], default="ema")
-    parser.add_argument("--smooth", type=float, default=0.7, help="EMA Faktor (0.1-1.0)")
-    parser.add_argument("--window-size", type=int, default=3, help="Fenstergröße für Median")
+    parser.add_argument("--smooth", type=float, default=0.6, help="EMA Faktor (0.1-1.0)")
+    parser.add_argument("--window-size", type=int, default=6, help="Fenstergröße für Median")
     parser.add_argument("-v", "--verbose", action="store_true")
     run(parser.parse_args())
 
