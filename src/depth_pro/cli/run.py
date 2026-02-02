@@ -42,7 +42,8 @@ def run(args):
         depth = prediction["depth"].detach().cpu().numpy().squeeze()
 
         # --- FILTER LOGIK ---
-        if args.filter_mode == "median":
+        # 1. Median-Filter (Entfernt Ausreißer zuerst)
+        if args.filter_mode in ["median", "combined"]:
             # Median-Filter (Zeitliches Fenster)
             window.append(depth)
             if len(window) > args.window_size:
@@ -50,7 +51,8 @@ def run(args):
             # Berechne Median über die Achse des Fensters
             depth = np.median(np.array(window), axis=0).astype(depth.dtype)
 
-        elif args.filter_mode == "ema":
+        # 2. EMA-Filter (Glättet den Verlauf)
+        if args.filter_mode in ["ema", "combined"]:
             # EMA-Filter (Gleitender Durchschnitt)
             if prev_depth is not None and depth.shape == prev_depth.shape:
                 depth = (args.smooth * depth) + ((1.0 - args.smooth) * prev_depth)
@@ -72,7 +74,7 @@ def main():
     parser.add_argument("-i", "--image-path", type=Path, required=True)
     parser.add_argument("-o", "--output_path", type=Path)
     parser.add_argument("--skip-display", action="store_true")
-    parser.add_argument("--filter-mode", type=str, choices=["ema", "median", "none"], default="ema")
+    parser.add_argument("--filter-mode", type=str, choices=["ema", "median", "none", "combined"], default="ema")
     parser.add_argument("--smooth", type=float, default=0.7, help="EMA Faktor (0.1-1.0)")
     parser.add_argument("--window-size", type=int, default=3, help="Fenstergröße für Median")
     parser.add_argument("-v", "--verbose", action="store_true")

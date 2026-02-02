@@ -6,32 +6,31 @@
 # =================================================================================
 show_help() {
 cat << EOF
-Nutzung: ./video2depth.sh [-h] video.mp4 [modus] [wert]
+Nutzung: ./video2depth.sh [-h] video.mp4 [modus] [wert1] [wert2]
 
 Erstellt ein Depth-Map-Video aus einer Quelldatei.
 
 ARGUMENTE:
   video.mp4     Pfad zur Eingabevideodatei. (Erforderlich)
 
-  modus         Der zu verwendende Filtermodus. Kann 'ema' oder 'median' sein.
-                'ema': Exponential Moving Average - glättet die Depth Maps über die Zeit.
-                'median': Medianfilter - reduziert Ausreißer über mehrere Frames.
+  modus         Der zu verwendende Filtermodus. 'ema', 'median' oder 'combined'.
+                'combined': Wendet erst Median, dann EMA an.
                 (Standard: ema)
 
-  wert          Der Wert für den gewählten Filtermodus.
-                - Für 'ema': Ein Glättungsfaktor zwischen 0.0 und 1.0. (Standard: 0.7)
-                - Für 'median': Eine ungerade Fenstergröße für den Medianfilter. (Standard: 3)
+  wert1         - Bei 'ema': Glättungsfaktor (0.0 - 1.0). (Standard: 0.7)
+                - Bei 'median': Fenstergröße (ungerade Zahl). (Standard: 3)
+                - Bei 'combined': Glättungsfaktor für EMA.
+
+  wert2         - Nur bei 'combined': Fenstergröße für Median. (Standard: 3)
 
 OPTIONEN:
   -h, --help    Zeigt diese Hilfenachricht an und beendet das Skript.
 
 BEISPIELE:
-  ./video2depth.sh mein_video.mp4
-  ./video2depth.sh mein_video.mp4 ema 0.5
-  ./video2depth.sh mein_video.mp4 median 5
+  ./video2depth.sh video.mp4 ema 0.5
+  ./video2depth.sh video.mp4 combined 0.5 5
 EOF
 }
-
 
 # =================================================================================
 # Parameter-Verarbeitung
@@ -47,16 +46,17 @@ fi
 
 if [ -z "$1" ]; then
     echo "❌ Fehler: Videodatei fehlt."
-    echo "Nutzung: ./video2depth.sh video.mp4 [modus: ema|median] [wert]"
+    echo "Nutzung: ./video2depth.sh video.mp4 [modus: ema|median|combined] [wert1] [wert2]"
     exit 1
 fi
 
 INPUT_VIDEO=$(realpath "$1")
 MODE=${2:-ema}      # Standard: ema
-VAL=${3:-0.7}       # Standardwert (0.7 für EMA, 3 für Median)
+VAL1=${3:-0.7}      # Standardwert 1
+VAL2=${4:-3}        # Standardwert 2 (nur für combined relevant)
 
 # Falls Median gewählt wurde, aber der Standardwert noch auf 0.7 steht, korrigieren
-if [ "$MODE" == "median" ] && [ "$VAL" == "0.7" ]; then VAL=3; fi
+if [ "$MODE" == "median" ] && [ "$VAL1" == "0.7" ]; then VAL1=3; fi
 
 DEPTH_CMD="depth-pro-run"
 VIDEO_NAME=$(basename "$INPUT_VIDEO" | cut -f 1 -d '.')
@@ -92,9 +92,12 @@ ffmpeg -v error -i "$INPUT_VIDEO" -pix_fmt rgb48be "$TMP_FRAMES/frame_%04d.png"
 
 echo "🧠 Berechne Depth Maps..."
 if [ "$MODE" == "median" ]; then
-    $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode median --window-size "$VAL"
+    $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode median --window-size "$VAL1"
+elif [ "$MODE" == "combined" ]; then
+    echo "   -> Kombinierter Modus: EMA=$VAL1, Median=$VAL2"
+    $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode combined --smooth "$VAL1" --window-size "$VAL2"
 else
-    $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode ema --smooth "$VAL"
+    $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode ema --smooth "$VAL1"
 fi
 
 echo "🎞  Erstelle Video..."
