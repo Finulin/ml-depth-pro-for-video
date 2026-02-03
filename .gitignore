@@ -18,3 +18,21 @@ data/depth/
 data/video/tmp_depth_example/
 
 data/video/tmp_frames_example/
+
+data/video/example_depthmap_g03.mp4
+
+data/video/example_depthmap_g07.mp4
+
+data/video/example_depthmap_raw.mp4
+
+data/video/example_depthmap.mp4
+
+data/video/example_depthmap_e1.0.mp4
+
+data/video/example_depthmap_e0.7.mp4
+
+data/video/example_depthmap_m24.mp4
+
+data/video/example_depthmap_m3.mp4
+
+data/video/example_depthmap_m5.mp4
