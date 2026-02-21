@@ -106,7 +106,7 @@ ffmpeg -v error -i "$INPUT_VIDEO" -pix_fmt rgb48be "$TMP_FRAMES/frame_%04d.png"
 echo "🧠 Berechne Depth Maps..."
 case "$MODE" in
     none)
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode none --torch-compile --low-memory --png-compression 1
         ;;
     median)
         $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode median --window-size "$VAL1" --torch-compile --low-memory --png-compression 1
