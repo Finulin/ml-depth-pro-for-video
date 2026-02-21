@@ -25,20 +25,104 @@ depth-pro-run -i ./data/image/example.jpg -o ./data/image/depth/ --skip-display
 # Führe `depth-pro-run -h` aus, um verfügbare Optionen anzuzeigen.
 
 # Führe die Erstellung von Depthmaps auf einem Video aus:
-./video2depth.sh ./data/video/example.mp4 combined 0.6 6
+./video2depth.sh ./data/video/example.mp4              # Ohne Filter
+./video2depth.sh ./data/video/example.mp4 ema 0.6      # Mit EMA-Filter
+# Weitere Filter-Beispiele siehe unten
 # Führe `video2depth.sh -h` aus, um verfügbare Optionen anzuzeigen.
 ```
-### Optionen
+### Filter-Optionen
 
-- `median`: Median Filter für die Depthmap-Berechnung
-- `3`: Kernelgröße für den Median Filter
+Die folgenden Filter können angewendet werden, um zeitliches Flackern in Depthmap-Videos zu reduzieren und die Konsistenz zwischen aufeinanderfolgenden Frames zu verbessern.
 
-- `ema`: Exponentieller Mittelwert Filter für die Depthmap-Berechnung
-- `0.6`: Alpha-Wert für den Exponentiellen Mittelwert Filter
+#### `none` – Kein Filter
+Verwendet die rohen Depthmaps ohne jede zeitliche Glättung. Nützlich für Benchmarking oder wenn nachträglich eigene Filter angewendet werden sollen.
 
-- `combined`: Kombination von Median und Exponentiellen Mittelwert Filter
-- `0.6`: EMA-Faktor
-- `6`: Median-Fenster
+#### `ema` – Exponentieller Mittelwert (Exponential Moving Average)
+Berechnet einen gewichteten Durchschnitt zwischen der aktuellen und der vorherigen Depthmap. Der `alpha`-Parameter (0.0–1.0) bestimmt, wie stark der aktuelle Frame gewichtet wird:
+- `alpha = 0.9`: Starke Betonung des aktuellen Frames, minimale Glättung
+- `alpha = 0.5`: Gleiche Gewichtung, moderate Glättung
+- `alpha = 0.1`: Starke Glättung, langsamer Reaktion auf Änderungen
+
+**Vorteile:** Schnell, einfach, geringer Speicherverbrauch  
+**Nachteile:** Kann bei schnellen Bewegungen Geisterbilder erzeugen
+
+#### `median` – Median-Filter
+Speichert ein Fenster der letzten N Frames und berechnet den Median pro Pixel. Entfernt effektiv Ausreißer und plötzliche Rauschspitzen, ohne Werte zu "verwaschen".
+
+- `window_size`: Anzahl der Frames im Puffer (Standard: 6)
+
+**Vorteile:** Robust gegen Ausreißer, erhält Kanten  
+**Nachteile:** Benötigt mehr Speicher, Latenz durch Fenstergröße
+
+#### `combined` – Median + EMA
+Wendet zuerst den Median-Filter an (entfernt Ausreißer), dann EMA (glättet den Verlauf). Kombiniert die Vorteile beider Filter.
+
+- `alpha`: EMA-Glättungsfaktor (Standard: 0.6)
+- `window_size`: Median-Fenstergröße (Standard: 6)
+
+**Vorteile:** Maximale Stabilität, beste Unterdrückung von Flackern  
+**Nachteile:** Höchster Speicherverbrauch und Latenz
+
+#### `bilateral` – Zeitlicher Bilateral-Filter
+Ein kantenerhaltender Filter, der Pixel basierend auf ihrer Ähnlichkeit gewichtet. Nur Pixel mit ähnlichen Tiefenwerten beeinflussen sich gegenseitig, wodurch Objektkanten scharf bleiben.
+
+- `spatial_sigma`: Räumliche Gewichtung (Standard: 5.0) – höhere Werte = stärkere Glättung
+- `range_sigma`: Wertebereich-Gewichtung (Standard: 0.1) – niedrigere Werte = stärkere Kantenerhaltung
+
+**Vorteile:** Erhält scharfe Kanten zwischen Objekten  
+**Nachteile:** Rechenintensiver als EMA
+
+#### `optical_flow` – Optical Flow basierte Glättung
+Nutzt Bewegungsvektoren zwischen Frames, um die vorherige Depthmap an die neue Position zu "verziehen" (Warping), bevor die Mischung erfolgt. Dadurch wird Bewegung berücksichtigt und Geisterbilder werden reduziert.
+
+- `alpha`: Mischungsverhältnis zwischen aktuellem und gewarptem Frame (Standard: 0.5)
+
+**Vorteile:** Beste Ergebnisse bei Kamerabewegung oder sich bewegenden Objekten  
+**Nachteile:** Am rechenintensivsten, kann bei schnellen Bewegungen Artefakte erzeugen
+
+#### `gmm` – Gaussian Mixture Model
+Modelliert die Tiefenverteilung pro Pixel als Mischung von Gaußverteilungen. Robust gegen plötzliche Änderungen und kann mehrere Tiefenhypothesen verwalten.
+
+- `components`: Anzahl der Gauß-Komponenten (Standard: 3)
+
+**Vorteile:** Robust bei Szenenwechseln, modelliert Unsicherheit  
+**Nachteile:** Speicherintensiv, komplexer Algorithmus
+
+#### `savgol` – Savitzky-Golay Filter
+Ein polynomieller Glättungsfilter, der lokale Maxima und Minima besser erhält als ein einfacher Durchschnitt. Passt ein Polynom an ein Fenster von Frames an.
+
+- `window_size`: Fenstergröße, muss ungerade und ≥3 sein (Standard: 6)
+
+**Vorteile:** Erhält lokale Details und Spitzenwerte  
+**Nachteile:** Benötisiert mehrere Frames, weniger robust gegen Ausreißer als Median
+
+---
+
+### Empfehlungen
+
+| Szenario | Empfohlener Filter | Begründung |
+|----------|-------------------|------------|
+| Statische Szene, wenig Bewegung | `ema` mit α=0.4–0.6 | Einfach, effektiv |
+| Schnelle Bewegung, Action | `optical_flow` | Berücksichtigt Bewegung |
+| Starke Ausreißer, Rauschen | `median` oder `combined` | Robust gegen Ausreißer |
+| Scharfe Kanten wichtig | `bilateral` | Kantenerhaltend |
+| Szenen mit Hintergrund/Vordergrund | `gmm` | Mehrere Tiefenhypothesen |
+| Maximale Qualität | `combined` oder `optical_flow` | Beste Stabilität |
+
+---
+
+### Schnellreferenz
+
+| Filter | Parameter | Standard | Befehl |
+|--------|-----------|----------|--------|
+| `none` | – | – | `./video2depth.sh video.mp4` |
+| `ema` | `alpha` | 0.6 | `./video2depth.sh video.mp4 ema 0.6` |
+| `median` | `window_size` | 6 | `./video2depth.sh video.mp4 median 6` |
+| `combined` | `alpha`, `window_size` | 0.6, 6 | `./video2depth.sh video.mp4 combined 0.6 6` |
+| `bilateral` | `spatial_sigma`, `range_sigma` | 5.0, 0.1 | `./video2depth.sh video.mp4 bilateral 5.0 0.1` |
+| `optical_flow` | `alpha` | 0.5 | `./video2depth.sh video.mp4 optical_flow 0.5` |
+| `gmm` | `components` | 3 | `./video2depth.sh video.mp4 gmm 3` |
+| `savgol` | `window_size` | 6 | `./video2depth.sh video.mp4 savgol 7` |
 
 ## License
 This sample code is released under the [LICENSE](LICENSE) terms.

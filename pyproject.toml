@@ -13,6 +13,8 @@ dependencies = [
     "ffprobe",
     "pillow_heif",
     "matplotlib",
+    "scipy",
+    "scikit-learn",
 ]
 
 [project.scripts]
