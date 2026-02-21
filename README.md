@@ -124,6 +124,48 @@ Ein polynomieller Glättungsfilter, der lokale Maxima und Minima besser erhält 
 | `gmm` | `components` | 3 | `./video2depth.sh video.mp4 gmm 3` |
 | `savgol` | `window_size` | 6 | `./video2depth.sh video.mp4 savgol 7` |
 
+---
+
+## Optimale Bildgröße
+
+Das KI-Modell arbeitet intern mit einer festen Auflösung von **1536×1536 Pixeln**.
+
+### Multi-Scale Architektur
+
+| Ebene | Auflösung | Beschreibung |
+|-------|-----------|--------------|
+| ViT Backbone | 384×384 | Basis-Auflösung des Vision Transformers (DINOv2) |
+| Niedrig | 384×384 | Patch-basierte Verarbeitung mit 25% Overlap |
+| Mittel | 768×768 | 50% der vollen Auflösung |
+| Hoch (Full) | **1536×1536** | Optimale Netzwerk-Eingabegröße |
+
+### Automatische Anpassung
+
+Bilder mit anderer Auflösung werden automatisch verarbeitet:
+1. Skalierung auf 1536×1536 (interne Verarbeitung)
+2. Depthmap-Berechnung
+3. Zurückskalierung auf Originalgröße
+
+**Hinweis:** Das Aspect Ratio wird nicht beibehalten, was bei stark nicht-quadratischen Bildern zu leichten Verzerrungen führen kann.
+
+### Empfehlung für beste Qualität
+
+Für optimale und konsistente Ergebnisse sollte das Video vorab auf 1536×1536 skaliert werden:
+
+```bash
+# Mit Padding (Aspect Ratio beibehalten)
+ffmpeg -i input.mp4 -vf "scale=1536:1536:force_original_aspect_ratio=decrease,pad=1536:1536:(ow-iw)/2:(oh-ih)/2:black" output.mp4
+
+# Ohne Padding (Aspect Ratio ändern)
+ffmpeg -i input.mp4 -vf "scale=1536:1536" output.mp4
+```
+
+### Performance-Tipps
+
+- **Kleinere Auflösungen** (z.B. 768×768): Schnellere Verarbeitung, geringere Qualität
+- **Größere Auflösungen** (z.B. 2048×2048): Langsamer, automatische Skalierung auf 1536×1536
+- **Native 1536×1536**: Beste Balance aus Qualität und Geschwindigkeit
+
 ## License
 This sample code is released under the [LICENSE](LICENSE) terms.
 
