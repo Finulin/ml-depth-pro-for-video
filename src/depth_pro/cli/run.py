@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import logging
+import gc
 from pathlib import Path
 import numpy as np
 import torch
@@ -13,14 +14,26 @@ from depth_pro import create_model_and_transforms, load_rgb
 LOGGER = logging.getLogger(__name__)
 
 def get_torch_device() -> torch.device:
-    if torch.backends.mps.is_available(): return torch.device("mps")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
     return torch.device("cpu")
 
 def run(args):
     if args.verbose: logging.basicConfig(level=logging.INFO)
 
-    model, transform = create_model_and_transforms(device=get_torch_device(), precision=torch.half)
+    device = get_torch_device()
+    model, transform = create_model_and_transforms(device=device, precision=torch.half)
     model.eval()
+    
+    if args.torch_compile and hasattr(torch, 'compile'):
+        try:
+            LOGGER.info("Compiling model with torch.compile()...")
+            model = torch.compile(model, mode="reduce-overhead")
+        except Exception as e:
+            LOGGER.warning(f"torch.compile() failed: {e}")
+
+    if args.low_memory:
+        pass
 
     if args.image_path.is_dir():
         image_paths = sorted(list(args.image_path.glob("**/*")))
@@ -33,6 +46,7 @@ def run(args):
     prev_image = None
     window = []
     gmm_models = {}
+    frame_count = 0
 
     for image_path in tqdm(image_paths):
         if image_path.suffix.lower() not in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]: continue
@@ -41,8 +55,12 @@ def run(args):
             image, _, f_px = load_rgb(image_path)
         except: continue
 
-        prediction = model.infer(transform(image), f_px=f_px)
-        depth = prediction["depth"].detach().cpu().numpy().squeeze()
+        with torch.no_grad():
+            prediction = model.infer(transform(image), f_px=f_px)
+            depth = prediction["depth"].detach().cpu().numpy().squeeze()
+            del prediction
+            if args.low_memory:
+                torch.mps.empty_cache()
 
         if args.filter_mode == "bilateral":
             if prev_depth is not None and depth.shape == prev_depth.shape:
@@ -123,7 +141,12 @@ def run(args):
             depth_norm = (depth - d_min) / (d_max - d_min + 1e-8)
             depth_16bit = ((1.0 - depth_norm) * 65535).astype(np.uint16)
 
-            cv2.imwrite(str(out_base) + "_16bit.png", depth_16bit)
+            cv2.imwrite(str(out_base) + "_16bit.png", depth_16bit, [cv2.IMWRITE_PNG_COMPRESSION, args.png_compression])
+
+        frame_count += 1
+        if args.low_memory and frame_count % 10 == 0:
+            gc.collect()
+            torch.mps.empty_cache()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -137,6 +160,9 @@ def main():
     parser.add_argument("--bilateral-range", type=float, default=0.1, help="Wertebereich-Sigma für Bilateral")
     parser.add_argument("--flow-alpha", type=float, default=0.5, help="Alpha für Optical Flow Mischung")
     parser.add_argument("--gmm-components", type=int, default=3, help="Anzahl GMM Komponenten")
+    parser.add_argument("--torch-compile", action="store_true", help="Aktiviert torch.compile() für schnelleres Inferenz (PyTorch 2.0+)")
+    parser.add_argument("--low-memory", action="store_true", help="Aktiviert Memory-Optimierungen für Systeme mit wenig RAM")
+    parser.add_argument("--png-compression", type=int, default=1, help="PNG-Kompression (0-9, 0=schnell, 9=klein)")
     parser.add_argument("-v", "--verbose", action="store_true")
     run(parser.parse_args())
 
