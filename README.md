@@ -1,162 +1,335 @@
-## Depth Pro: Scharfe Monokulare Metrische Depthmaps für Videos
+# Depth Pro: Scharfe Monokulare Metrische Depthmaps für Videos
 
-# Erste Schritte
-
-Wir empfehlen, eine virtuelle Umgebung einzurichten. Zum Beispiel mit miniconda kann das `depth_pro_for_video`-Paket wie folgt installiert werden:
+## Erste Schritte
 
 ```bash
+# Virtuelle Umgebung erstellen (miniconda empfohlen)
 conda create -n depth-pro-for-video -y python=3.9
 conda activate depth-pro-for-video
 
+# Paket installieren
 pip install -e .
+
+# Vortrainierte Modelle herunterladen
+source get_pretrained_models.sh
 ```
 
-Um vortrainierte KI-Modelle (Checkpoints) herunterzuladen, führen Sie das folgende Code-Schnipsel aus:
+---
+
+## Schnellstart
+
+### Einzelbild verarbeiten
 ```bash
-source get_pretrained_models.sh   # Files will be downloaded to `checkpoints` directory.
+depth-pro-run -i ./data/image/example.jpg -o ./output/ --skip-display
 ```
 
-### Ausführung über die Kommandozeile
-
-Wir stellen Hilfsskripte bereit, um das Modell direkt auf einem einzelnen Bild oder einem Video auszuführen:
+### Video verarbeiten
 ```bash
-# Führe die Erstellung einer Depthmap auf einem einzelnen Bild aus:
-depth-pro-run -i ./data/image/example.jpg -o ./data/image/depth/ --skip-display
-# Führe `depth-pro-run -h` aus, um verfügbare Optionen anzuzeigen.
-
-# Führe die Erstellung von Depthmaps auf einem Video aus:
 ./video2depth.sh ./data/video/example.mp4              # Ohne Filter
 ./video2depth.sh ./data/video/example.mp4 ema 0.6      # Mit EMA-Filter
-# Weitere Filter-Beispiele siehe unten
-# Führe `video2depth.sh -h` aus, um verfügbare Optionen anzuzeigen.
 ```
-### Filter-Optionen
 
-Die folgenden Filter können angewendet werden, um zeitliches Flackern in Depthmap-Videos zu reduzieren und die Konsistenz zwischen aufeinanderfolgenden Frames zu verbessern.
+---
 
-#### `none` – Kein Filter
-Verwendet die rohen Depthmaps ohne jede zeitliche Glättung. Nützlich für Benchmarking oder wenn nachträglich eigene Filter angewendet werden sollen.
+## Filter-Optionen im Detail
 
-#### `ema` – Exponentieller Mittelwert (Exponential Moving Average)
-Berechnet einen gewichteten Durchschnitt zwischen der aktuellen und der vorherigen Depthmap. Der `alpha`-Parameter (0.0–1.0) bestimmt, wie stark der aktuelle Frame gewichtet wird:
-- `alpha = 0.9`: Starke Betonung des aktuellen Frames, minimale Glättung
-- `alpha = 0.5`: Gleiche Gewichtung, moderate Glättung
-- `alpha = 0.1`: Starke Glättung, langsamer Reaktion auf Änderungen
+Alle Filter reduzieren zeitliches Flackern und verbessern die Konsistenz zwischen aufeinanderfolgenden Frames.
 
-**Vorteile:** Schnell, einfach, geringer Speicherverbrauch  
-**Nachteile:** Kann bei schnellen Bewegungen Geisterbilder erzeugen
+### Übersicht aller Filter
 
-#### `median` – Median-Filter
-Speichert ein Fenster der letzten N Frames und berechnet den Median pro Pixel. Entfernt effektiv Ausreißer und plötzliche Rauschspitzen, ohne Werte zu "verwaschen".
+| Filter | Parameter | Standard | Speicher | Geschwindigkeit | Best für |
+|--------|-----------|----------|----------|-----------------|----------|
+| `none` | – | – | Minimal | Schnellst | Benchmarking |
+| `ema` | `alpha` | 0.6 | Minimal | Schnell | Statische Szenen |
+| `median` | `window_size` | 6 | Mittel | Mittel | Ausreißer entfernen |
+| `combined` | `alpha`, `window_size` | 0.6, 6 | Hoch | Mittel | Maximale Stabilität |
+| `bilateral` | `spatial_sigma`, `range_sigma` | 5.0, 0.1 | Minimal | Mittel | Kantenerhaltung |
+| `optical_flow` | `alpha` | 0.5 | Mittel | Langsam | Bewegte Szenen |
+| `gmm` | `components` | 3 | Hoch | Mittel | Szenenwechsel |
+| `savgol` | `window_size` | 6 | Mittel | Mittel | Details erhalten |
 
-- `window_size`: Anzahl der Frames im Puffer (Standard: 6)
+---
+
+### `none` – Kein Filter
+Rohe Depthmaps ohne zeitliche Glättung. Ideal für Benchmarking oder nachträgliche Filterung.
+
+```bash
+./video2depth.sh video.mp4
+```
+
+---
+
+### `ema` – Exponentieller Mittelwert
+Gewichteter Durchschnitt zwischen aktuellem und vorherigem Frame.
+
+**Parameter:**
+| Parameter | Bereich | Standard | Effekt |
+|-----------|---------|----------|--------|
+| `alpha` | 0.0–1.0 | 0.6 | Höher = mehr aktueller Frame |
+
+**Alpha-Werte im Vergleich:**
+- `0.9`: Minimale Glättung, fast rohe Frames
+- `0.6`: Ausgewogene Glättung (Standard)
+- `0.3`: Starke Glättung, langsame Anpassung
+- `0.1`: Sehr starke Glättung, Geisterbilder möglich
+
+**Beispiele:**
+```bash
+# Standard-Glättung
+./video2depth.sh video.mp4 ema 0.6
+
+# Minimale Glättung für schnelle Bewegungen
+./video2depth.sh video.mp4 ema 0.8
+
+# Starke Glättung für statische Szenen
+./video2depth.sh video.mp4 ema 0.3
+```
+
+**Vorteile:** Schnell, einfach, minimaler Speicher  
+**Nachteile:** Geisterbilder bei schnellen Bewegungen
+
+---
+
+### `median` – Median-Filter
+Berechnet den Median über ein Fenster von Frames. Entfernt Ausreißer effektiv.
+
+**Parameter:**
+| Parameter | Bereich | Standard | Effekt |
+|-----------|---------|----------|--------|
+| `window_size` | 3–15 | 6 | Größer = stärkere Glättung, mehr Latenz |
+
+**Beispiele:**
+```bash
+# Standard-Fenster
+./video2depth.sh video.mp4 median 6
+
+# Kleines Fenster für schnellere Reaktion
+./video2depth.sh video.mp4 median 3
+
+# Großes Fenster für maximale Stabilität
+./video2depth.sh video.mp4 median 10
+```
 
 **Vorteile:** Robust gegen Ausreißer, erhält Kanten  
-**Nachteile:** Benötigt mehr Speicher, Latenz durch Fenstergröße
+**Nachteile:** Benötigt Speicher für Fenster, Latenz
 
-#### `combined` – Median + EMA
-Wendet zuerst den Median-Filter an (entfernt Ausreißer), dann EMA (glättet den Verlauf). Kombiniert die Vorteile beider Filter.
+---
 
-- `alpha`: EMA-Glättungsfaktor (Standard: 0.6)
-- `window_size`: Median-Fenstergröße (Standard: 6)
+### `combined` – Median + EMA
+Kombiniert Median (Ausreißerentfernung) mit EMA (Glättung). Beste Gesamtqualität.
 
-**Vorteile:** Maximale Stabilität, beste Unterdrückung von Flackern  
-**Nachteile:** Höchster Speicherverbrauch und Latenz
+**Parameter:**
+| Parameter | Bereich | Standard | Effekt |
+|-----------|---------|----------|--------|
+| `alpha` | 0.0–1.0 | 0.6 | EMA-Glättungsfaktor |
+| `window_size` | 3–15 | 6 | Median-Fenstergröße |
 
-#### `bilateral` – Zeitlicher Bilateral-Filter
-Ein kantenerhaltender Filter, der Pixel basierend auf ihrer Ähnlichkeit gewichtet. Nur Pixel mit ähnlichen Tiefenwerten beeinflussen sich gegenseitig, wodurch Objektkanten scharf bleiben.
+**Beispiele:**
+```bash
+# Standard-Kombination
+./video2depth.sh video.mp4 combined 0.6 6
 
-- `spatial_sigma`: Räumliche Gewichtung (Standard: 5.0) – höhere Werte = stärkere Glättung
-- `range_sigma`: Wertebereich-Gewichtung (Standard: 0.1) – niedrigere Werte = stärkere Kantenerhaltung
+# Stärkere Glättung für Interviews/Vlogs
+./video2depth.sh video.mp4 combined 0.4 8
 
-**Vorteile:** Erhält scharfe Kanten zwischen Objekten  
+# Für Action-Aufnahmen
+./video2depth.sh video.mp4 combined 0.7 4
+```
+
+**Vorteile:** Maximale Stabilität, beste Flackern-Unterdrückung  
+**Nachteile:** Höchster Speicherverbrauch
+
+---
+
+### `bilateral` – Zeitlicher Bilateral-Filter
+Kantenerhaltender Filter – nur ähnliche Tiefenwerte beeinflussen sich gegenseitig.
+
+**Parameter:**
+| Parameter | Bereich | Standard | Effekt |
+|-----------|---------|----------|--------|
+| `spatial_sigma` | 1.0–20.0 | 5.0 | Räumliche Glättung |
+| `range_sigma` | 0.01–1.0 | 0.1 | Wertebereich-Glättung |
+
+**Beispiele:**
+```bash
+# Standard-Einstellungen
+./video2depth.sh video.mp4 bilateral 5.0 0.1
+
+# Starke Kantenerhaltung
+./video2depth.sh video.mp4 bilateral 3.0 0.05
+
+# Stärkere Glättung
+./video2depth.sh video.mp4 bilateral 10.0 0.2
+```
+
+**Vorteile:** Erhält scharfe Objektkanten  
 **Nachteile:** Rechenintensiver als EMA
 
-#### `optical_flow` – Optical Flow basierte Glättung
-Nutzt Bewegungsvektoren zwischen Frames, um die vorherige Depthmap an die neue Position zu "verziehen" (Warping), bevor die Mischung erfolgt. Dadurch wird Bewegung berücksichtigt und Geisterbilder werden reduziert.
+---
 
-- `alpha`: Mischungsverhältnis zwischen aktuellem und gewarptem Frame (Standard: 0.5)
+### `optical_flow` – Optical Flow Glättung
+Nutzt Bewegungsvektoren für Warping vor der Mischung. Beste Qualität bei Bewegung.
 
-**Vorteile:** Beste Ergebnisse bei Kamerabewegung oder sich bewegenden Objekten  
-**Nachteile:** Am rechenintensivsten, kann bei schnellen Bewegungen Artefakte erzeugen
+**Parameter:**
+| Parameter | Bereich | Standard | Effekt |
+|-----------|---------|----------|--------|
+| `alpha` | 0.0–1.0 | 0.5 | Mischungsverhältnis |
 
-#### `gmm` – Gaussian Mixture Model
-Modelliert die Tiefenverteilung pro Pixel als Mischung von Gaußverteilungen. Robust gegen plötzliche Änderungen und kann mehrere Tiefenhypothesen verwalten.
+**Beispiele:**
+```bash
+# Standard-Optical-Flow
+./video2depth.sh video.mp4 optical_flow 0.5
 
-- `components`: Anzahl der Gauß-Komponenten (Standard: 3)
+# Mehr vom aktuellen Frame
+./video2depth.sh video.mp4 optical_flow 0.7
 
-**Vorteile:** Robust bei Szenenwechseln, modelliert Unsicherheit  
-**Nachteile:** Speicherintensiv, komplexer Algorithmus
+# Mehr vom gewarpten Frame
+./video2depth.sh video.mp4 optical_flow 0.3
+```
 
-#### `savgol` – Savitzky-Golay Filter
-Ein polynomieller Glättungsfilter, der lokale Maxima und Minima besser erhält als ein einfacher Durchschnitt. Passt ein Polynom an ein Fenster von Frames an.
+**Vorteile:** Beste Ergebnisse bei Kamera-/Objektbewegung  
+**Nachteile:** Am rechenintensivsten
 
-- `window_size`: Fenstergröße, muss ungerade und ≥3 sein (Standard: 6)
+---
+
+### `gmm` – Gaussian Mixture Model
+Modelliert Tiefenverteilung als Mischung von Gaußverteilungen. Robust bei Szenenwechseln.
+
+**Parameter:**
+| Parameter | Bereich | Standard | Effekt |
+|-----------|---------|----------|--------|
+| `components` | 2–5 | 3 | Anzahl der Gauß-Komponenten |
+
+**Beispiele:**
+```bash
+# Standard-GMM
+./video2depth.sh video.mp4 gmm 3
+
+# Weniger Komponenten (schneller)
+./video2depth.sh video.mp4 gmm 2
+
+# Mehr Komponenten (komplexere Szenen)
+./video2depth.sh video.mp4 gmm 5
+```
+
+**Vorteile:** Robust bei Szenenwechseln  
+**Nachteile:** Speicherintensiv
+
+---
+
+### `savgol` – Savitzky-Golay Filter
+Polynomielle Glättung, die lokale Details besser erhält.
+
+**Parameter:**
+| Parameter | Bereich | Standard | Effekt |
+|-----------|---------|----------|--------|
+| `window_size` | 3–15 (ungerade) | 7 | Größer = stärkere Glättung |
+
+**Beispiele:**
+```bash
+# Standard-Savitzky-Golay
+./video2depth.sh video.mp4 savgol 7
+
+# Kleines Fenster für Details
+./video2depth.sh video.mp4 savgol 5
+
+# Großes Fenster für Glättung
+./video2depth.sh video.mp4 savgol 11
+```
 
 **Vorteile:** Erhält lokale Details und Spitzenwerte  
-**Nachteile:** Benötisiert mehrere Frames, weniger robust gegen Ausreißer als Median
+**Nachteile:** Weniger robust gegen Ausreißer als Median
 
 ---
 
-### Empfehlungen
+## Praktische Anwendungsbeispiele
 
-| Szenario | Empfohlener Filter | Begründung |
-|----------|-------------------|------------|
-| Statische Szene, wenig Bewegung | `ema` mit α=0.4–0.6 | Einfach, effektiv |
-| Schnelle Bewegung, Action | `optical_flow` | Berücksichtigt Bewegung |
-| Starke Ausreißer, Rauschen | `median` oder `combined` | Robust gegen Ausreißer |
-| Scharfe Kanten wichtig | `bilateral` | Kantenerhaltend |
-| Szenen mit Hintergrund/Vordergrund | `gmm` | Mehrere Tiefenhypothesen |
-| Maximale Qualität | `combined` oder `optical_flow` | Beste Stabilität |
+### Interview / Vlog (statische Kamera)
+```bash
+./video2depth.sh interview.mp4 ema 0.4
+# oder für maximale Qualität:
+./video2depth.sh interview.mp4 combined 0.4 8
+```
+
+### Action-Sport (schnelle Bewegung)
+```bash
+./video2depth.sh action.mp4 optical_flow 0.6
+```
+
+### Drohnen-Aufnahme (langsame Kamerabewegung)
+```bash
+./video2depth.sh drone.mp4 optical_flow 0.4
+```
+
+### Dokumentarfilm (gemischte Szenen)
+```bash
+./video2depth.sh docu.mp4 combined 0.5 6
+```
+
+### 3D-Konvertierung (maximale Qualität)
+```bash
+# Schritt 1: Video auf optimale Größe skalieren
+ffmpeg -i input.mp4 -vf "scale=1536:1536:force_original_aspect_ratio=decrease,pad=1536:1536:(ow-iw)/2:(oh-ih)/2:black" input_1536.mp4
+
+# Schritt 2: Mit bestmöglichem Filter verarbeiten
+./video2depth.sh input_1536.mp4 combined 0.5 8
+```
+
+### Low-Memory Situation (8GB RAM)
+```bash
+# Einzelbilder extrahieren
+ffmpeg -i video.mp4 frames/%04d.png
+
+# Mit Memory-Optimierung verarbeiten
+depth-pro-run -i ./frames -o ./depth --filter-mode ema --smooth 0.6 --low-memory
+
+# Video aus Depthmaps erstellen
+ffmpeg -framerate 30 -i ./depth/%04d_16bit.png -c:v libx265 depth_video.mp4
+```
 
 ---
 
-### Schnellreferenz
+## Empfehlungen nach Szenario
 
-| Filter | Parameter | Standard | Befehl |
-|--------|-----------|----------|--------|
-| `none` | – | – | `./video2depth.sh video.mp4` |
-| `ema` | `alpha` | 0.6 | `./video2depth.sh video.mp4 ema 0.6` |
-| `median` | `window_size` | 6 | `./video2depth.sh video.mp4 median 6` |
-| `combined` | `alpha`, `window_size` | 0.6, 6 | `./video2depth.sh video.mp4 combined 0.6 6` |
-| `bilateral` | `spatial_sigma`, `range_sigma` | 5.0, 0.1 | `./video2depth.sh video.mp4 bilateral 5.0 0.1` |
-| `optical_flow` | `alpha` | 0.5 | `./video2depth.sh video.mp4 optical_flow 0.5` |
-| `gmm` | `components` | 3 | `./video2depth.sh video.mp4 gmm 3` |
-| `savgol` | `window_size` | 6 | `./video2depth.sh video.mp4 savgol 7` |
+| Szenario | Filter | Parameter | Begründung |
+|----------|--------|-----------|------------|
+| Interview/Talking Head | `ema` | 0.4 | Statisch, einfacher Filter reicht |
+| Vlog (Handkamera) | `combined` | 0.5, 6 | Kompensiert Wackeln |
+| Sport/Action | `optical_flow` | 0.6 | Berücksichtigt Bewegung |
+| Drohne (langsam) | `optical_flow` | 0.4 | Sanfte Bewegungen |
+| Drohne (schnell) | `optical_flow` | 0.6 | Schnelle Bewegungen |
+| Spielfilm | `combined` | 0.5, 8 | Maximale Qualität |
+| Zeitraffer | `savgol` | 7 | Erhält Details |
+| Security-Cam | `median` | 5 | Robust gegen Rauschen |
+| Low-Memory | `ema` | 0.6 | Minimaler Speicher |
 
 ---
 
-## Performance-Optimierung für Apple Silicon
+## Performance-Optimierung
 
-Das Skript ist bereits für Apple Silicon (M1/M2/M3/M4) optimiert:
-
-### Automatisch aktivierte Optimierungen
+### Automatische Optimierungen (Apple Silicon)
 
 | Optimierung | Beschreibung |
 |-------------|--------------|
-| **MPS Backend** | Nutzt Metal Performance Shaders für GPU-Beschleunigung |
-| **Half Precision (FP16)** | Reduziert Speicherverbrauch, verdoppelt Geschwindigkeit |
-| **torch.compile()** | Just-In-Time-Kompilierung für schnellere Inferenz (PyTorch 2.0+) |
-| **Memory Management** | Regelmäßiges Freigeben von GPU-Speicher |
-| **PNG Fast-Write** | Kompression auf Stufe 1 für schnelleres Schreiben |
+| MPS Backend | Metal Performance Shaders GPU-Beschleunigung |
+| Half Precision (FP16) | Halber Speicher, doppelte Geschwindigkeit |
+| PNG Fast-Write | Kompression Stufe 1 für schnelleres Schreiben |
 
 ### Manuelle CLI-Optionen
 
-Für `depth-pro-run` stehen weitere Optionen zur Verfügung:
-
 ```bash
 depth-pro-run -i ./frames -o ./depth \
-    --torch-compile \       # Aktiviert torch.compile() (PyTorch 2.0+)
-    --low-memory \          # Memory-Optimierungen für wenig RAM
-    --png-compression 1     # 0=schnell, 9=klein (Standard: 1)
+    --filter-mode ema \
+    --smooth 0.6 \
+    --torch-compile \       # PyTorch 2.0+ JIT-Kompilierung
+    --low-memory \          # Memory-Optimierungen
+    --png-compression 1     # 0=schnell, 9=klein
 ```
 
-### RAM-Disk für temporäre Dateien (optional)
-
-Für noch schnellere I/O kann eine RAM-Disk verwendet werden:
+### RAM-Disk für temporäre Dateien
 
 ```bash
-# RAM-Disk erstellen (4GB)
+# 4GB RAM-Disk erstellen (macOS)
 sudo diskutil erasevolume HFS+ RAMDisk "$(hdiutil attach -nomount ram://8388608)"
 
 # Video in RAM-Disk verarbeiten
@@ -165,55 +338,32 @@ sudo diskutil erasevolume HFS+ RAMDisk "$(hdiutil attach -nomount ram://8388608)
 
 ### Geschwindigkeitsvergleich (M4, 16GB)
 
-| Szenario | Frames/s | Anmerkung |
-|----------|----------|-----------|
-| Ohne Optimierung | ~0.5 fps | Nur CPU |
-| MPS + FP16 | ~2-3 fps | Standard |
-| + torch.compile | ~3-4 fps | Nach Warmup |
+| Konfiguration | Frames/s |
+|---------------|----------|
+| CPU only | ~0.5 fps |
+| MPS + FP16 | ~2-3 fps |
+| MPS + FP16 + torch.compile | ~3-4 fps |
 
 ---
 
 ## Optimale Bildgröße
 
-Das KI-Modell arbeitet intern mit einer festen Auflösung von **1536×1536 Pixeln**.
-
-### Multi-Scale Architektur
-
-| Ebene | Auflösung | Beschreibung |
-|-------|-----------|--------------|
-| ViT Backbone | 384×384 | Basis-Auflösung des Vision Transformers (DINOv2) |
-| Niedrig | 384×384 | Patch-basierte Verarbeitung mit 25% Overlap |
-| Mittel | 768×768 | 50% der vollen Auflösung |
-| Hoch (Full) | **1536×1536** | Optimale Netzwerk-Eingabegröße |
-
-### Automatische Anpassung
-
-Bilder mit anderer Auflösung werden automatisch verarbeitet:
-1. Skalierung auf 1536×1536 (interne Verarbeitung)
-2. Depthmap-Berechnung
-3. Zurückskalierung auf Originalgröße
-
-**Hinweis:** Das Aspect Ratio wird nicht beibehalten, was bei stark nicht-quadratischen Bildern zu leichten Verzerrungen führen kann.
+Das Modell arbeitet intern mit **1536×1536 Pixeln**.
 
 ### Empfehlung für beste Qualität
-
-Für optimale und konsistente Ergebnisse sollte das Video vorab auf 1536×1536 skaliert werden:
 
 ```bash
 # Mit Padding (Aspect Ratio beibehalten)
 ffmpeg -i input.mp4 -vf "scale=1536:1536:force_original_aspect_ratio=decrease,pad=1536:1536:(ow-iw)/2:(oh-ih)/2:black" output.mp4
 
-# Ohne Padding (Aspect Ratio ändern)
+# Ohne Padding
 ffmpeg -i input.mp4 -vf "scale=1536:1536" output.mp4
 ```
 
-### Performance-Tipps
-
-- **Kleinere Auflösungen** (z.B. 768×768): Schnellere Verarbeitung, geringere Qualität
-- **Größere Auflösungen** (z.B. 2048×2048): Langsamer, automatische Skalierung auf 1536×1536
-- **Native 1536×1536**: Beste Balance aus Qualität und Geschwindigkeit
+---
 
 ## License
+
 This sample code is released under the [LICENSE](LICENSE) terms.
 
 The model weights are released under the [LICENSE](LICENSE) terms.
