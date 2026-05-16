@@ -6,7 +6,7 @@
 # =================================================================================
 show_help() {
 cat << EOF
-Nutzung: ./video2depth.sh [-h] video.mp4 [modus] [wert1] [wert2]
+Nutzung: ./video2depth.sh [-h] [-p] video.mp4 [modus] [wert1] [wert2]
 
 Erstellt ein Depth-Map-Video aus einer Quelldatei.
 
@@ -37,6 +37,10 @@ ARGUMENTE:
 
 OPTIONEN:
   -h, --help    Zeigt diese Hilfenachricht an und beendet das Skript.
+  -p, --pad     Skaliert Frames auf 1536×1536 mit schwarzen Balken (Letterbox/Pillarbox)
+                bevor die Depth Maps berechnet werden. Verhindert Verzerrungen durch
+                das modellseitige Squishing auf 1:1 und verbessert die Inferenzqualität
+                bei nicht-quadratischen Videos.
 
 BEISPIELE:
   ./video2depth.sh video.mp4
@@ -44,12 +48,27 @@ BEISPIELE:
   ./video2depth.sh video.mp4 bilateral 5.0 0.1
   ./video2depth.sh video.mp4 optical_flow 0.5
   ./video2depth.sh video.mp4 combined 0.5 5
+  ./video2depth.sh -p video.mp4 ema 0.5
 EOF
 }
 
 # =================================================================================
 # Parameter-Verarbeitung
 # =================================================================================
+PAD_TO_SQUARE=false
+ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "-p" ]] || [[ "$arg" == "--pad" ]]; then
+        PAD_TO_SQUARE=true
+    elif [[ "$arg" == "-h" ]] || [[ "$arg" == "--help" ]]; then
+        show_help
+        exit 0
+    else
+        ARGS+=("$arg")
+    fi
+done
+set -- "${ARGS[@]}"
+
 if [[ "$1" == "-h" ]] || [[ "$1" == "--help" ]]; then
     show_help
     exit 0
@@ -62,6 +81,8 @@ if [ -z "$1" ]; then
 fi
 
 INPUT_VIDEO=$(realpath "$1")
+ORIG_W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$INPUT_VIDEO")
+ORIG_H=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT_VIDEO")
 MODE=${2:-none}
 VAL1=${3:-0.6}
 VAL2=${4:-6}
@@ -81,6 +102,7 @@ VIDEO_NAME=$(basename "$INPUT_VIDEO" | cut -f 1 -d '.')
 DIR_SOURCE=$(dirname "$INPUT_VIDEO")
 
 TMP_FRAMES="${DIR_SOURCE}/tmp_frames_${VIDEO_NAME}"
+TMP_PADDED="${DIR_SOURCE}/tmp_padded_${VIDEO_NAME}"
 TMP_DEPTH="${DIR_SOURCE}/tmp_depth_${VIDEO_NAME}"
 OUTPUT_VIDEO="${DIR_SOURCE}/${VIDEO_NAME}_depthmap.mp4"
 
@@ -98,7 +120,7 @@ if [ "$TOTAL_REQUIRED_MB" -gt "$AVAILABLE_MB" ]; then
    [[ $confirm != [yY] ]] && exit 1
 fi
 
-echo "🎬 Modus: $MODE | Wert1: $VAL1 | Wert2: $VAL2"
+echo "🎬 Modus: $MODE | Wert1: $VAL1 | Wert2: $VAL2 | Pad: $PAD_TO_SQUARE"
 mkdir -p "$TMP_FRAMES" "$TMP_DEPTH"
 
 FPS=$(ffprobe -v 0 -of default=noprint_wrappers=1:nokey=1 -select_streams v:0 -show_entries stream=r_frame_rate "$INPUT_VIDEO")
@@ -106,41 +128,63 @@ FPS=$(ffprobe -v 0 -of default=noprint_wrappers=1:nokey=1 -select_streams v:0 -s
 echo "🔨 Zerlege Video..."
 ffmpeg -v error -i "$INPUT_VIDEO" -pix_fmt rgb48be "$TMP_FRAMES/frame_%04d.png"
 
+INFERENCE_FRAMES="$TMP_FRAMES"
+CROP_FILTER=""
+if [ "$PAD_TO_SQUARE" = true ]; then
+    echo "🔲 Skaliere auf 1536×1536 (Letterbox)..."
+    mkdir -p "$TMP_PADDED"
+    ffmpeg -v error -i "$TMP_FRAMES/frame_%04d.png" \
+        -vf "scale=1536:1536:force_original_aspect_ratio=decrease,pad=1536:1536:(ow-iw)/2:(oh-ih)/2:black" \
+        "$TMP_PADDED/frame_%04d.png"
+    INFERENCE_FRAMES="$TMP_PADDED"
+
+    if [ "$ORIG_W" -ge "$ORIG_H" ]; then
+        SCALED_W=1536
+        SCALED_H=$(( (1536 * ORIG_H / ORIG_W) / 2 * 2 ))
+    else
+        SCALED_H=1536
+        SCALED_W=$(( (1536 * ORIG_W / ORIG_H) / 2 * 2 ))
+    fi
+    CROP_X=$(( (1536 - SCALED_W) / 2 ))
+    CROP_Y=$(( (1536 - SCALED_H) / 2 ))
+    CROP_FILTER="-vf crop=${SCALED_W}:${SCALED_H}:${CROP_X}:${CROP_Y}"
+fi
+
 echo "🧠 Berechne Depth Maps..."
 case "$MODE" in
     none)
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode none --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode none --torch-compile --low-memory --png-compression 1
         ;;
     median)
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode median --window-size "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode median --window-size "$VAL1" --torch-compile --low-memory --png-compression 1
         ;;
     combined)
         echo "   -> Kombinierter Modus: EMA=$VAL1, Median=$VAL2"
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode combined --smooth "$VAL1" --window-size "$VAL2" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode combined --smooth "$VAL1" --window-size "$VAL2" --torch-compile --low-memory --png-compression 1
         ;;
     bilateral)
         echo "   -> Bilateral: Spatial=$VAL1, Range=$VAL2"
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode bilateral --bilateral-spatial "$VAL1" --bilateral-range "$VAL2" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode bilateral --bilateral-spatial "$VAL1" --bilateral-range "$VAL2" --torch-compile --low-memory --png-compression 1
         ;;
     optical_flow)
         echo "   -> Optical Flow: Alpha=$VAL1"
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode optical_flow --flow-alpha "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode optical_flow --flow-alpha "$VAL1" --torch-compile --low-memory --png-compression 1
         ;;
     gmm)
         echo "   -> GMM: Components=$VAL1"
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode gmm --gmm-components "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode gmm --gmm-components "$VAL1" --torch-compile --low-memory --png-compression 1
         ;;
     savgol)
         echo "   -> Savitzky-Golay: Window=$VAL1"
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode savgol --window-size "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode savgol --window-size "$VAL1" --torch-compile --low-memory --png-compression 1
         ;;
     *)
-        $DEPTH_CMD -i "$TMP_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode ema --smooth "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode ema --smooth "$VAL1" --torch-compile --low-memory --png-compression 1
         ;;
 esac
 
 echo "🎞  Erstelle Video..."
-ffmpeg -y -v error -r "$FPS" -i "$TMP_DEPTH/frame_%04d_16bit.png" -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO"
+ffmpeg -y -v error -r "$FPS" -i "$TMP_DEPTH/frame_%04d_16bit.png" $CROP_FILTER -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO"
 
-rm -rf "$TMP_FRAMES" "$TMP_DEPTH"
+rm -rf "$TMP_FRAMES" "$TMP_PADDED" "$TMP_DEPTH"
 echo "✅ Fertig: $OUTPUT_VIDEO"
