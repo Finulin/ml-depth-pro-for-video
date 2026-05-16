@@ -6,7 +6,7 @@
 # =================================================================================
 show_help() {
 cat << EOF
-Nutzung: ./video2depth.sh [-h] [-p] video.mp4 [modus] [wert1] [wert2]
+Nutzung: ./video2depth.sh [-h] [-p] [-n] [-t] video.mp4 [modus] [wert1] [wert2]
 
 Erstellt ein Depth-Map-Video aus einer Quelldatei.
 
@@ -22,6 +22,8 @@ ARGUMENTE:
                 'optical_flow': Optical Flow basierte Glättung
                 'gmm': Gaussian Mixture Model
                 'savgol': Savitzky-Golay Filter
+                'ema_norm': Range-EMA (nunif-Stil) – glättet nur den
+                            Normalisierungsbereich, kein Ghosting bei Bewegung
                 Wenn kein Modus angegeben wird, wird kein Filter angewendet.
 
   wert1         - 'ema': Glättungsfaktor (0.0-1.0). (Standard: 0.6)
@@ -41,6 +43,15 @@ OPTIONEN:
                 bevor die Depth Maps berechnet werden. Verhindert Verzerrungen durch
                 das modellseitige Squishing auf 1:1 und verbessert die Inferenzqualität
                 bei nicht-quadratischen Videos.
+  -n, --npz     Speichert alle Tiefenkarten zusätzlich als kombinierte NPZ-Datei
+                (<video>_depth.npz) mit rohen Float32-Tiefenwerten in Metern.
+                Array-Shape: (Frames, H, W).
+  -e, --enhance Verbesserte Normalisierung der Depth Maps: Percentile-Clipping (2%/98%)
+                und Log-Skalierung für höheren Kontrast. Standard: min/max-Normalisierung.
+  -t, --tile    Zerlegt jeden Frame in 1536×1536-Kacheln, berechnet Depth Maps
+                pro Kachel und setzt sie zusammen. Höhere Detailauflösung bei
+                großen Frames (4K+), aber proportional mehr Rechenaufwand.
+                Schließt -p aus (Tiling hat Vorrang).
 
 BEISPIELE:
   ./video2depth.sh video.mp4
@@ -49,6 +60,11 @@ BEISPIELE:
   ./video2depth.sh video.mp4 optical_flow 0.5
   ./video2depth.sh video.mp4 combined 0.5 5
   ./video2depth.sh -p video.mp4 ema 0.5
+  ./video2depth.sh -n video.mp4 combined 0.5 5
+  ./video2depth.sh -p -n video.mp4
+  ./video2depth.sh -t video.mp4 none
+  ./video2depth.sh -t -n video.mp4 ema 0.5
+  ./video2depth.sh -e video.mp4 none
 EOF
 }
 
@@ -56,10 +72,19 @@ EOF
 # Parameter-Verarbeitung
 # =================================================================================
 PAD_TO_SQUARE=false
+SAVE_NPZ=false
+TILING=false
+ENHANCE=false
 ARGS=()
 for arg in "$@"; do
     if [[ "$arg" == "-p" ]] || [[ "$arg" == "--pad" ]]; then
         PAD_TO_SQUARE=true
+    elif [[ "$arg" == "-n" ]] || [[ "$arg" == "--npz" ]]; then
+        SAVE_NPZ=true
+    elif [[ "$arg" == "-e" ]] || [[ "$arg" == "--enhance" ]]; then
+        ENHANCE=true
+    elif [[ "$arg" == "-t" ]] || [[ "$arg" == "--tile" ]]; then
+        TILING=true
     elif [[ "$arg" == "-h" ]] || [[ "$arg" == "--help" ]]; then
         show_help
         exit 0
@@ -87,6 +112,7 @@ MODE=${2:-none}
 VAL1=${3:-0.6}
 VAL2=${4:-6}
 
+if [ "$MODE" == "ema_norm" ] && [ "$VAL1" == "0.6" ]; then VAL1=0.9; fi
 if [ "$MODE" == "median" ] && [ "$VAL1" == "0.6" ]; then VAL1=6; fi
 if [ "$MODE" == "savgol" ] && [ "$VAL1" == "0.6" ]; then VAL1=6; fi
 if [ "$MODE" == "gmm" ] && [ "$VAL1" == "0.6" ]; then VAL1=3; fi
@@ -120,7 +146,23 @@ if [ "$TOTAL_REQUIRED_MB" -gt "$AVAILABLE_MB" ]; then
    [[ $confirm != [yY] ]] && exit 1
 fi
 
-echo "🎬 Modus: $MODE | Wert1: $VAL1 | Wert2: $VAL2 | Pad: $PAD_TO_SQUARE"
+NPZ_FLAG=""
+if [ "$SAVE_NPZ" = true ]; then NPZ_FLAG="--save-npz"; fi
+
+NORM_FLAG=""
+if [ "$ENHANCE" = true ]; then NORM_FLAG="--norm-mode enhanced"; fi
+
+if [ "$TILING" = true ]; then
+    TILE_FLAG="--tiling"
+    if [ "$PAD_TO_SQUARE" = true ]; then
+        echo "⚠️  -p wird ignoriert, da -t aktiv ist."
+        PAD_TO_SQUARE=false
+    fi
+else
+    TILE_FLAG=""
+fi
+
+echo "🎬 Modus: $MODE | Wert1: $VAL1 | Wert2: $VAL2 | Pad: $PAD_TO_SQUARE | Tile: $TILING | NPZ: $SAVE_NPZ | Enhance: $ENHANCE"
 mkdir -p "$TMP_FRAMES" "$TMP_DEPTH"
 
 FPS=$(ffprobe -v 0 -of default=noprint_wrappers=1:nokey=1 -select_streams v:0 -show_entries stream=r_frame_rate "$INPUT_VIDEO")
@@ -153,35 +195,51 @@ fi
 echo "🧠 Berechne Depth Maps..."
 case "$MODE" in
     none)
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode none --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode none --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
     median)
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode median --window-size "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode median --window-size "$VAL1" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
     combined)
         echo "   -> Kombinierter Modus: EMA=$VAL1, Median=$VAL2"
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode combined --smooth "$VAL1" --window-size "$VAL2" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode combined --smooth "$VAL1" --window-size "$VAL2" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
     bilateral)
         echo "   -> Bilateral: Spatial=$VAL1, Range=$VAL2"
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode bilateral --bilateral-spatial "$VAL1" --bilateral-range "$VAL2" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode bilateral --bilateral-spatial "$VAL1" --bilateral-range "$VAL2" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
     optical_flow)
         echo "   -> Optical Flow: Alpha=$VAL1"
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode optical_flow --flow-alpha "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode optical_flow --flow-alpha "$VAL1" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
     gmm)
         echo "   -> GMM: Components=$VAL1"
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode gmm --gmm-components "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode gmm --gmm-components "$VAL1" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
     savgol)
         echo "   -> Savitzky-Golay: Window=$VAL1"
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode savgol --window-size "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode savgol --window-size "$VAL1" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
+        ;;
+    ema_norm)
+        echo "   -> Range-EMA (nunif): Decay=$VAL1"
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode ema_norm --norm-decay "$VAL1" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
     *)
-        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode ema --smooth "$VAL1" --torch-compile --low-memory --png-compression 1
+        $DEPTH_CMD -i "$INFERENCE_FRAMES" -o "$TMP_DEPTH" --skip-display --filter-mode ema --smooth "$VAL1" --torch-compile --low-memory --png-compression 1 $NPZ_FLAG $TILE_FLAG $NORM_FLAG
         ;;
 esac
+
+if [ "$SAVE_NPZ" = true ]; then
+    echo "📦 Füge NPZ-Einzelbilder zusammen..."
+    OUTPUT_NPZ="${DIR_SOURCE}/${VIDEO_NAME}_depth.npz"
+    python -c "
+import numpy as np, glob
+files = sorted(glob.glob('${TMP_DEPTH}/*_depth.npz'))
+arrays = [np.load(f)['depth'] for f in files]
+np.savez_compressed('${OUTPUT_NPZ}', depth=np.stack(arrays))
+print(f'   -> {len(arrays)} Frames, Shape: {np.stack(arrays).shape}')
+"
+fi
 
 echo "🎞  Erstelle Video..."
 ffmpeg -y -v error -r "$FPS" -i "$TMP_DEPTH/frame_%04d_16bit.png" $CROP_FILTER -c:v libx264 -crf 18 -pix_fmt yuv420p "$OUTPUT_VIDEO"
