@@ -73,6 +73,9 @@ if [ "$MODE" == "bilateral" ] && [ "$VAL1" == "0.6" ]; then VAL1=5.0; fi
 if [ "$MODE" == "bilateral" ] && [ "$VAL2" == "6" ]; then VAL2=0.1; fi
 if [ "$MODE" == "optical_flow" ] && [ "$VAL1" == "0.6" ]; then VAL1=0.5; fi
 
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate depth-pro-for-video
+
 DEPTH_CMD="depth-pro-run"
 VIDEO_NAME=$(basename "$INPUT_VIDEO" | cut -f 1 -d '.')
 DIR_SOURCE=$(dirname "$INPUT_VIDEO")
