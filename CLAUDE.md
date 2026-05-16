@@ -2,102 +2,81 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
-
-**Depth Pro for Video** — an inference implementation of Apple's Depth Pro monocular depth estimation model, extended with temporal filtering for video processing. It estimates metric depth maps (in meters) from single RGB images or video frames.
-
 ## Setup
 
 ```bash
-conda create -n depth-pro-for-video -y python=3.9
-conda activate depth-pro-for-video
+# Create environment and install
+conda create -n depth-pro python=3.9
+conda activate depth-pro
 pip install -e .
-source get_pretrained_models.sh  # Downloads ~1.9 GB model to checkpoints/depth_pro.pt
+
+# Download pre-trained model weights (~1.9 GB)
+source get_pretrained_models.sh
 ```
 
 ## Common Commands
 
 ```bash
-# Single image depth estimation
-depth-pro-run -i ./data/image/example.jpg -o ./output/ --skip-display
+# Run depth estimation on images
+depth-pro-run -i <image_or_dir> -o <output_dir>
 
-# Video to depth map (8 filter modes: none, ema, median, combined, bilateral, optical_flow, gmm, savgol)
-./video2depth.sh ./data/video/example.mp4              # No filter
-./video2depth.sh ./data/video/example.mp4 ema 0.6      # EMA filter (alpha=0.6)
-./video2depth.sh ./data/video/example.mp4 combined 0.5 6  # Median (window=6) + EMA (alpha=0.5)
-./video2depth.sh -h                                    # Show help
+# Run with temporal filter on video frames
+depth-pro-run -i <frames_dir> -o <output_dir> --filter ema --alpha 0.3
 
-# Linting / formatting / type checking
-ruff check src/
-ruff format src/
-pyright src/
+# Process a full video (extract → infer → encode)
+./video2depth.sh <video.mp4> [filter_mode] [param1] [param2]
 
-# Tests (no test files exist yet, but config is in place)
+# Run tests
 pytest
-pytest tests/test_file.py::test_function
 ```
 
 ## Architecture
 
+The project wraps Apple's Depth Pro model with a video-processing pipeline.
+
+### Inference Pipeline
+
 ```
-Input Image
-    │
-    ▼
-DepthProEncoder (src/network/encoder.py)
-  ├── Patch ViT backbone (DINOv2-L16, 384×384, 16-token patches)
-  ├── Image ViT backbone (same architecture)
-  ├── Multi-scale sliding window patch extraction
-  └── Hook-based feature collection at ViT layers 5, 11, 17, 23
-    │
-    ▼
-MultiresConvDecoder (src/network/decoder.py)
-  └── Fuses multi-resolution features
-    │
-    ▼
-Depth Head + FOV Network (src/network/fov.py)
-  └── Outputs inverse depth → converted to metric meters using focal length
-    │
-    ▼
-Optional Temporal Filter (src/depth_pro/cli/run.py)
-  └── Applied per-frame for video sequences
+Input Image → Transform → DepthProEncoder → MultiresConvDecoder → Head → depth (meters)
+                                                                 → FOVNetwork → focallength_px
 ```
 
-### Key Files
+**Key files:**
+- `src/depth_pro/__init__.py` — Public API: `create_model_and_transforms()`, `load_rgb()`
+- `src/depth_pro/depth_pro.py` — `DepthPro` nn.Module + `DepthProConfig` dataclass; `model.infer(image, f_px)` returns `{depth, focallength_px}`
+- `src/depth_pro/utils.py` — `load_rgb()` (EXIF rotation, HEIC support), `fpx_from_f35()`
 
-- **`src/depth_pro/depth_pro.py`** — `DepthPro` model class and `create_model_and_transforms()` factory. `infer()` is the main inference method.
-- **`src/depth_pro/cli/run.py`** — CLI entry point (`depth-pro-run`); contains all 8 temporal filter implementations and the frame processing loop.
-- **`src/depth_pro/__init__.py`** — Public API surface.
-- **`src/depth_pro/network/vit_factory.py`** — ViT preset definitions (currently `dinov2l16_384`).
-- **`video2depth.sh`** — Orchestrates ffmpeg frame extraction → `depth-pro-run` → ffmpeg video reconstruction.
+### Network Components
 
-### Temporal Filtering
+- `src/depth_pro/network/encoder.py` — `DepthProEncoder`: builds an image pyramid, encodes overlapping patches via patch ViT + full image via image ViT, returns multi-resolution feature maps
+- `src/depth_pro/network/decoder.py` — `MultiresConvDecoder`: progressively fuses multi-resolution features bottom-up via `FeatureFusionBlock2d`
+- `src/depth_pro/network/fov.py` — `FOVNetwork`: estimates camera FOV from decoder features for metric depth conversion
+- `src/depth_pro/network/vit_factory.py` — `create_vit()` factory; only preset currently in use is `"dinov2l16_384"` (DINOv2 Large, 384×384)
 
-Filters are stateful and applied frame-by-frame in `run.py`:
-- **Stateful (recursive):** `ema`, `bilateral` — state = previous depth frame
-- **Window-based:** `median`, `savgol`, `combined` — state = rolling buffer of N frames
-- **Advanced:** `optical_flow` (motion-compensated warping), `gmm` (Gaussian mixture model)
+### CLI & Video Processing
 
-### Hardware
+- `src/depth_pro/cli/run.py` — `depth-pro-run` entry point; processes image directories; implements 8 temporal filtering modes; writes 16-bit normalized PNG depth maps
+- `video2depth.sh` — Shell orchestrator: validates disk space → extracts frames via ffmpeg → calls `depth-pro-run` → encodes output video (H.264, CRF 18) → cleans up frames
 
-Target machine: **Apple Mac Mini M4, 16 GB RAM** (unified memory shared between CPU and GPU).
+### Temporal Filter Modes
 
-- MPS backend is the primary compute device (auto-detected)
-- 16 GB unified memory is shared with the OS and other processes — the model alone uses ~4 GB in FP16; keep this in mind when choosing batch sizes or window sizes for temporal filters
-- `torch.mps.empty_cache()` is called periodically during long video runs to return unused memory
+| Mode | Parameters | Description |
+|------|-----------|-------------|
+| `none` | — | Raw per-frame output |
+| `ema` | `--alpha` (0.0–1.0) | Exponential moving average |
+| `median` | `--window_size` (3–15) | Sliding window median |
+| `combined` | both above | Median + EMA |
+| `bilateral` | — | Edge-preserving bilateral filter |
+| `optical_flow` | — | Motion-aware depth warping |
+| `gmm` | `--components` (2–5) | Gaussian Mixture Model |
+| `savgol` | — | Savitzky-Golay polynomial |
 
-## Performance Notes
+## Device & Precision
 
-- Default precision: `torch.half` (FP16)
-- `torch.compile()` supported for PyTorch 2.0+
-- PNG output uses compression level 1 for fast I/O
+- Default device: MPS (Apple Silicon) with automatic CPU fallback
+- FP16 (half precision) available via CLI flag for faster inference
+- `torch.compile()` supported for additional throughput
 
-## Code Style
+## Output Format
 
-- **Python 3.9** — use `Optional[T]` not `T | None`, `from typing import ...`
-- **Line length:** 100 characters (Ruff enforced)
-- **Imports:** `from __future__ import annotations` first, then stdlib / third-party / local (relative)
-- **Docstrings:** Google-style with `Args:` and `Returns:` sections, imperative form
-- **Copyright header required** on every source file: `# Copyright (C) 2024 Apple Inc.`
-- **Logging:** `LOGGER = logging.getLogger(__name__)` per module
-- **Configs:** Use `@dataclass` (see `DepthProConfig`, `ViTPreset`)
-- **Inference:** Always wrap in `with torch.no_grad():`
+Depth maps are written as 16-bit PNG (0–65535 range, normalized within each batch).
