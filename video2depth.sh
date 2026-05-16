@@ -15,6 +15,7 @@ ARGUMENTE:
 
   modus         Der zu verwendende Filtermodus. Optional.
                 'none': Kein Filter
+                Standard: 'optical_flow' mit Alpha 0.5
                 'ema': Exponentieller Mittelwert
                 'median': Median-Filter
                 'combined': Median + EMA kombiniert
@@ -30,7 +31,7 @@ ARGUMENTE:
                 - 'median': Fenstergröße. (Standard: 6)
                 - 'combined': EMA-Glättungsfaktor. (Standard: 0.6)
                 - 'bilateral': Räumliche Sigma. (Standard: 5.0)
-                - 'optical_flow': Alpha-Wert (0.0-1.0). (Standard: 0.5)
+                - 'optical_flow': Alpha-Wert (0.0-1.0). (Standard: 0.5) ← Standardmodus
                 - 'gmm': Anzahl Komponenten. (Standard: 3)
                 - 'savgol': Fenstergröße. (Standard: 6)
 
@@ -46,8 +47,9 @@ OPTIONEN:
   -n, --npz     Speichert alle Tiefenkarten zusätzlich als kombinierte NPZ-Datei
                 (<video>_depth.npz) mit rohen Float32-Tiefenwerten in Metern.
                 Array-Shape: (Frames, H, W).
-  -e, --enhance Verbesserte Normalisierung der Depth Maps: Percentile-Clipping (2%/98%)
-                und Log-Skalierung für höheren Kontrast. Standard: min/max-Normalisierung.
+  -e, --enhance   Verbesserte Normalisierung: Percentile-Clipping (2%/98%) + Log-Skalierung.
+                  (Standard: aktiv)
+  -E, --no-enhance  Deaktiviert verbesserte Normalisierung, verwendet min/max-Normalisierung.
   -t, --tile    Zerlegt jeden Frame in 1536×1536-Kacheln, berechnet Depth Maps
                 pro Kachel und setzt sie zusammen. Höhere Detailauflösung bei
                 großen Frames (4K+), aber proportional mehr Rechenaufwand.
@@ -74,7 +76,7 @@ EOF
 PAD_TO_SQUARE=false
 SAVE_NPZ=false
 TILING=false
-ENHANCE=false
+ENHANCE=true
 ARGS=()
 for arg in "$@"; do
     if [[ "$arg" == "-p" ]] || [[ "$arg" == "--pad" ]]; then
@@ -83,6 +85,8 @@ for arg in "$@"; do
         SAVE_NPZ=true
     elif [[ "$arg" == "-e" ]] || [[ "$arg" == "--enhance" ]]; then
         ENHANCE=true
+    elif [[ "$arg" == "-E" ]] || [[ "$arg" == "--no-enhance" ]]; then
+        ENHANCE=false
     elif [[ "$arg" == "-t" ]] || [[ "$arg" == "--tile" ]]; then
         TILING=true
     elif [[ "$arg" == "-h" ]] || [[ "$arg" == "--help" ]]; then
@@ -108,15 +112,16 @@ fi
 INPUT_VIDEO=$(realpath "$1")
 ORIG_W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$INPUT_VIDEO")
 ORIG_H=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT_VIDEO")
-MODE=${2:-none}
-VAL1=${3:-0.6}
+MODE=${2:-optical_flow}
+VAL1=${3:-0.5}
 VAL2=${4:-6}
 
-if [ "$MODE" == "ema_norm" ] && [ "$VAL1" == "0.6" ]; then VAL1=0.9; fi
-if [ "$MODE" == "median" ] && [ "$VAL1" == "0.6" ]; then VAL1=6; fi
-if [ "$MODE" == "savgol" ] && [ "$VAL1" == "0.6" ]; then VAL1=6; fi
-if [ "$MODE" == "gmm" ] && [ "$VAL1" == "0.6" ]; then VAL1=3; fi
-if [ "$MODE" == "bilateral" ] && [ "$VAL1" == "0.6" ]; then VAL1=5.0; fi
+if [ "$MODE" == "ema_norm" ] && [ "$VAL1" == "0.5" ]; then VAL1=0.9; fi
+if [ "$MODE" == "ema" ] && [ "$VAL1" == "0.5" ]; then VAL1=0.6; fi
+if [ "$MODE" == "median" ] && [ "$VAL1" == "0.5" ]; then VAL1=6; fi
+if [ "$MODE" == "savgol" ] && [ "$VAL1" == "0.5" ]; then VAL1=6; fi
+if [ "$MODE" == "gmm" ] && [ "$VAL1" == "0.5" ]; then VAL1=3; fi
+if [ "$MODE" == "bilateral" ] && [ "$VAL1" == "0.5" ]; then VAL1=5.0; fi
 if [ "$MODE" == "bilateral" ] && [ "$VAL2" == "6" ]; then VAL2=0.1; fi
 if [ "$MODE" == "optical_flow" ] && [ "$VAL1" == "0.6" ]; then VAL1=0.5; fi
 
