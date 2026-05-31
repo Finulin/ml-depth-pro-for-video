@@ -2,6 +2,7 @@
 import argparse
 import logging
 import gc
+from collections import deque
 from pathlib import Path
 import numpy as np
 import torch
@@ -12,6 +13,14 @@ from sklearn.mixture import GaussianMixture
 from depth_pro import create_model_and_transforms, load_rgb
 
 LOGGER = logging.getLogger(__name__)
+
+def apply_reflect_pad(image, pad_frac):
+    H, W = image.shape[:2]
+    pad_h = int(H * pad_frac)
+    pad_w = int(W * pad_frac)
+    padded = np.pad(image, ((pad_h, pad_h), (pad_w, pad_w), (0, 0)), mode="reflect")
+    return padded, pad_h, pad_w
+
 
 def infer_tiled(model, transform, image, f_px, overlap=64):
     H, W = image.shape[:2]
@@ -48,7 +57,7 @@ def infer_tiled(model, transform, image, f_px, overlap=64):
         + alphas * depth_right[:, :blend_w]
     )
 
-    return depth_map
+    return depth_map, f_px
 
 def get_torch_device() -> torch.device:
     if torch.backends.mps.is_available():
@@ -86,6 +95,7 @@ def run(args):
     frame_count = 0
     ema_norm_min = None
     ema_norm_max = None
+    norm_buffer = deque(maxlen=args.norm_buffer_size) if args.norm_buffer_size > 1 else None
 
     for image_path in tqdm(image_paths):
         if image_path.suffix.lower() not in [".jpg", ".jpeg", ".png", ".webp", ".bmp"]: continue
@@ -94,13 +104,25 @@ def run(args):
             image, _, f_px = load_rgb(image_path)
         except: continue
 
+        if args.f_px is not None:
+            f_px = torch.tensor(args.f_px, dtype=torch.float32)
+
+        pad_h = pad_w = 0
+        infer_image = image
+        if args.reflect_pad:
+            infer_image, pad_h, pad_w = apply_reflect_pad(image, args.reflect_pad_frac)
+
         if args.tiling:
-            depth = infer_tiled(model, transform, image, f_px, overlap=args.tile_overlap)
+            depth, focallength_px = infer_tiled(model, transform, infer_image, f_px, overlap=args.tile_overlap)
         else:
             with torch.no_grad():
-                prediction = model.infer(transform(image), f_px=f_px)
-                depth = prediction["depth"].detach().cpu().numpy().squeeze()
+                prediction = model.infer(transform(infer_image), f_px=f_px)
+                depth = prediction["depth"].detach().cpu().numpy().squeeze().astype(np.float32)
+                focallength_px = float(prediction["focallength_px"].item())
                 del prediction
+
+        if args.reflect_pad and (pad_h > 0 or pad_w > 0):
+            depth = depth[pad_h:depth.shape[0] - pad_h, pad_w:depth.shape[1] - pad_w]
         if args.low_memory:
             torch.mps.empty_cache()
 
@@ -177,11 +199,17 @@ def run(args):
 
         elif args.filter_mode == "ema_norm":
             cur_min, cur_max = float(depth.min()), float(depth.max())
-            if ema_norm_min is None:
-                ema_norm_min, ema_norm_max = cur_min, cur_max
+            if norm_buffer is not None:
+                norm_buffer.append((cur_min, cur_max))
+                buf_min = min(v[0] for v in norm_buffer)
+                buf_max = max(v[1] for v in norm_buffer)
             else:
-                ema_norm_min = args.norm_decay * ema_norm_min + (1 - args.norm_decay) * cur_min
-                ema_norm_max = args.norm_decay * ema_norm_max + (1 - args.norm_decay) * cur_max
+                buf_min, buf_max = cur_min, cur_max
+            if ema_norm_min is None:
+                ema_norm_min, ema_norm_max = buf_min, buf_max
+            else:
+                ema_norm_min = args.norm_decay * ema_norm_min + (1 - args.norm_decay) * buf_min
+                ema_norm_max = args.norm_decay * ema_norm_max + (1 - args.norm_decay) * buf_max
 
         if args.output_path:
             out_base = args.output_path / image_path.relative_to(relative_path).parent / image_path.stem
@@ -203,7 +231,7 @@ def run(args):
             cv2.imwrite(str(out_base) + "_16bit.png", depth_16bit, [cv2.IMWRITE_PNG_COMPRESSION, args.png_compression])
 
             if args.save_npz:
-                np.savez_compressed(str(out_base) + "_depth.npz", depth=depth.astype(np.float32))
+                np.savez_compressed(str(out_base) + "_depth.npz", depth=depth.astype(np.float32), focallength_px=np.float32(focallength_px))
 
         frame_count += 1
         if args.low_memory and frame_count % 10 == 0:
@@ -230,8 +258,16 @@ def main():
         help="Normalisierung: 'minmax'=min/max (Standard), 'enhanced'=Percentile-Clipping + Log-Skala")
     parser.add_argument("--norm-decay", type=float, default=0.9,
         help="EMA-Decay für ema_norm-Modus (0.0–1.0, Standard: 0.9)")
+    parser.add_argument("--norm-buffer-size", type=int, default=30,
+        help="Puffergröße für ema_norm: Min/Max über N Frames stabilisieren (Standard: 30; 1=deaktiviert)")
+    parser.add_argument("--reflect-pad", action="store_true",
+        help="Spiegelt Bildränder vor der Inferenz (reduziert Rand-Artefakte, nach nunif/iw3)")
+    parser.add_argument("--reflect-pad-frac", type=float, default=0.0625,
+        help="Padding-Anteil pro Seite als Bruchteil der Bildgröße (Standard: 0.0625 = 6.25%%)")
     parser.add_argument("--tiling", action="store_true", help="Zerlegt jeden Frame in 1536×1536-Kacheln für höhere Detailauflösung bei großen Bildern")
     parser.add_argument("--tile-overlap", type=int, default=64, help="Überlappung in Pixeln zwischen Kacheln (Standard: 64)")
+    parser.add_argument("--f-px", type=float, default=None, dest="f_px",
+        help="Feste Brennweite in Pixeln (überschreibt EXIF und FOV-Schätzung; stabilisiert Tiefenskala über alle Frames)")
     parser.add_argument("-v", "--verbose", action="store_true")
     run(parser.parse_args())
 

@@ -19,6 +19,8 @@ dependencies = [
 
 [project.scripts]
 depth-pro-run = "depth_pro.cli:run_main"
+depth2stereo = "depth_pro.cli.depth2stereo:main"
+floating-window = "depth_pro.cli.floating_window:main"
 
 [project.urls]
 Homepage = "https://github.com/apple/ml-depth-pro"
